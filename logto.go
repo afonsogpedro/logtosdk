@@ -1,18 +1,14 @@
 package logtosdk
 
 import (
-	"crypto"
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rsa"
-	"crypto/sha256"
-	"crypto/sha512"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
-	"io/ioutil"
 	"math/big"
 	"net"
 	"net/http"
@@ -115,6 +111,22 @@ type Response struct {
 	Data   map[string]interface{} `json:"data"`
 }
 
+const (
+	BearerPrefix                 = "Bearer "
+	ErrCreatingRequest           = "error al crear la solicitud: %w"
+	ErrPerformingRequest         = "error al realizar la solicitud: %w"
+	ErrReadingResponse           = "error al leer la respuesta: %w"
+	ErrRequestFailed             = "error en la solicitud: código %d, respuesta: %s"
+	ErrEmptyResponse             = "la respuesta está vacía"
+	ErrDeserializingJSONResponse = "error al deserializar la respuesta JSON: %w"
+	XForwardedForHeader          = "X-Forwarded-For"
+	ContentTypeHeader            = "Content-Type"
+	MethodNotAllowed             = "Método no permitido"
+	TokenNotProvided             = "Token no proporcionado"
+	InvalidTokenFormat           = "Formato de token inválido"
+	ApplicationJSON              = "application/json"
+)
+
 // NewLogtoClient es el constructor del cliente, que se encarga de configurar el servidor de Logto y el cliente HTTP
 // para realizar las solicitudes. Si httpClient es nil, se utiliza http.DefaultClient. Se deben usar el los datos de
 // configuración de Logto de maquina a maquina con permisos al servidor default de Logto.
@@ -140,59 +152,49 @@ func NewLogtoClient(host string, httpClient *http.Client, cliendId, clientSecret
 func (c *Client) GetApplications(token string) ([]Application, error) {
 	req, err := http.NewRequest("GET", c.host+"/api/applications", nil)
 	if err != nil {
-		return nil, fmt.Errorf("Error al crear la solicitud: %w", err)
+		return nil, fmt.Errorf(ErrCreatingRequest, err)
 	}
-	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("Authorization", BearerPrefix+token)
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("Error al realizar la solicitud: %w", err)
+		return nil, fmt.Errorf(ErrPerformingRequest, err)
 	}
-	defer resp.Body.Close()
+	defer closeResponseBody(resp)
 	return parseResponse[[]Application](resp)
 }
 
 // GetMetaApplications obtiene la información de una aplicación.
 // Retorna un Application.
 func (c *Client) GetMetaApplications(token string, applicationID string) (*Application, error) {
-	// Construir la URL correctamente
-	url := fmt.Sprintf("%s/api/applications/%s", c.host, applicationID)
-
-	// Crear la solicitud HTTP GET
-	req, err := http.NewRequest("GET", url, nil)
+	requestURL := fmt.Sprintf("%s/api/applications/%s", c.host, applicationID)
+	req, err := http.NewRequest("GET", requestURL, nil)
 	if err != nil {
-		return nil, fmt.Errorf("error al crear la solicitud: %w", err)
+		return nil, fmt.Errorf(ErrCreatingRequest, err)
 	}
-	req.Header.Set("Authorization", "Bearer "+token)
-
-	// Realizar la solicitud HTTP
+	req.Header.Set("Authorization", BearerPrefix+token)
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("error al realizar la solicitud: %w", err)
+		return nil, fmt.Errorf(ErrPerformingRequest, err)
 	}
-	defer resp.Body.Close()
+	defer closeResponseBody(resp)
 
-	// Leer el cuerpo de la respuesta
 	bodyBytes, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return nil, fmt.Errorf("error al leer la respuesta: %w", err)
+		return nil, fmt.Errorf(ErrReadingResponse, err)
 	}
 
-	// Verificar el código de estado
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("error en la solicitud: código %d, respuesta: %s", resp.StatusCode, string(bodyBytes))
+		return nil, fmt.Errorf(ErrRequestFailed, resp.StatusCode, string(bodyBytes))
 	}
 
-	// Verificar si la respuesta está vacía
 	if len(bodyBytes) == 0 {
-		return nil, fmt.Errorf("la respuesta está vacía")
+		return nil, fmt.Errorf(ErrEmptyResponse)
 	}
 
-	// Deserializar la respuesta en un objeto Application
 	var app Application
 	if err := json.Unmarshal(bodyBytes, &app); err != nil {
-		return nil, fmt.Errorf("error al deserializar la respuesta JSON: %w", err)
+		return nil, fmt.Errorf(ErrDeserializingJSONResponse, err)
 	}
-
 	return &app, nil
 }
 
@@ -201,57 +203,57 @@ func (c *Client) GetMetaApplications(token string, applicationID string) (*Appli
 func (c *Client) GetOrganizations(token string) ([]Organization, error) {
 	req, err := http.NewRequest("GET", c.host+"/api/organizations", nil)
 	if err != nil {
-		return nil, fmt.Errorf("Error al crear la solicitud: %w", err)
+		return nil, fmt.Errorf(ErrCreatingRequest, err)
 	}
-	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("Authorization", BearerPrefix+token)
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("Error al realizar la solicitud: %w", err)
+		return nil, fmt.Errorf(ErrPerformingRequest, err)
 	}
-	defer resp.Body.Close()
+	defer closeResponseBody(resp)
 	return parseResponse[[]Organization](resp)
 }
 
-// GetMetaOrganizations obtiene las organizaciones asociadas a un cliente.
+// GetOrganizationsApplication obtiene las organizaciones asociadas a una aplicación.
 // Retorna una lista de Organization.
 func (c *Client) GetOrganizationsApplication(token string, applicationID string) ([]Organization, error) {
 	// Construir la URL correctamente
-	url := fmt.Sprintf("%s/api/organizations/%s/applications", c.host, applicationID)
+	requestURL := fmt.Sprintf("%s/api/organizations/%s/applications", c.host, applicationID)
 
 	// Crear la solicitud HTTP GET
-	req, err := http.NewRequest("GET", url, nil)
+	req, err := http.NewRequest("GET", requestURL, nil)
 	if err != nil {
-		return nil, fmt.Errorf("error al crear la solicitud: %w", err)
+		return nil, fmt.Errorf(ErrCreatingRequest, err)
 	}
-	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("Authorization", BearerPrefix+token)
 
 	// Realizar la solicitud HTTP
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("error al realizar la solicitud: %w", err)
+		return nil, fmt.Errorf(ErrPerformingRequest, err)
 	}
-	defer resp.Body.Close()
+	defer closeResponseBody(resp)
 
 	// Leer el cuerpo de la respuesta
 	bodyBytes, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return nil, fmt.Errorf("error al leer la respuesta: %w", err)
+		return nil, fmt.Errorf(ErrReadingResponse, err)
 	}
 
 	// Verificar el código de estado
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("error en la solicitud: código %d, respuesta: %s", resp.StatusCode, string(bodyBytes))
+		return nil, fmt.Errorf(ErrRequestFailed, resp.StatusCode, string(bodyBytes))
 	}
 
 	// Verificar si la respuesta está vacía
 	if len(bodyBytes) == 0 {
-		return nil, fmt.Errorf("la respuesta está vacía")
+		return nil, fmt.Errorf(ErrEmptyResponse)
 	}
 
 	// Deserializar la respuesta en una lista de organizaciones
 	var orgs []Organization
 	if err := json.Unmarshal(bodyBytes, &orgs); err != nil {
-		return nil, fmt.Errorf("error al deserializar la respuesta JSON: %w", err)
+		return nil, fmt.Errorf(ErrDeserializingJSONResponse, err)
 	}
 
 	return orgs, nil
@@ -261,42 +263,42 @@ func (c *Client) GetOrganizationsApplication(token string, applicationID string)
 // Retorna una lista de Organization.
 func (c *Client) GetMetaOrganizations(token string, applicationID string) ([]Organization, error) {
 	// Construir la URL correctamente
-	url := fmt.Sprintf("%s/api/applications/%s/organizations", c.host, applicationID)
+	requestURL := fmt.Sprintf("%s/api/applications/%s/organizations", c.host, applicationID)
 
 	// Crear la solicitud HTTP GET
-	req, err := http.NewRequest("GET", url, nil)
+	req, err := http.NewRequest("GET", requestURL, nil)
 	if err != nil {
-		return nil, fmt.Errorf("error al crear la solicitud: %w", err)
+		return nil, fmt.Errorf(ErrCreatingRequest, err)
 	}
-	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("Authorization", BearerPrefix+token)
 
 	// Realizar la solicitud HTTP
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("error al realizar la solicitud: %w", err)
+		return nil, fmt.Errorf(ErrPerformingRequest, err)
 	}
-	defer resp.Body.Close()
+	defer closeResponseBody(resp)
 
 	// Leer el cuerpo de la respuesta
 	bodyBytes, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return nil, fmt.Errorf("error al leer la respuesta: %w", err)
+		return nil, fmt.Errorf(ErrReadingResponse, err)
 	}
 
 	// Verificar el código de estado
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("error en la solicitud: código %d, respuesta: %s", resp.StatusCode, string(bodyBytes))
+		return nil, fmt.Errorf(ErrRequestFailed, resp.StatusCode, string(bodyBytes))
 	}
 
 	// Verificar si la respuesta está vacía
 	if len(bodyBytes) == 0 {
-		return nil, fmt.Errorf("la respuesta está vacía")
+		return nil, fmt.Errorf(ErrEmptyResponse)
 	}
 
 	// Deserializar la respuesta en una lista de organizaciones
 	var orgs []Organization
 	if err := json.Unmarshal(bodyBytes, &orgs); err != nil {
-		return nil, fmt.Errorf("error al deserializar la respuesta JSON: %w", err)
+		return nil, fmt.Errorf(ErrDeserializingJSONResponse, err)
 	}
 
 	return orgs, nil
@@ -311,7 +313,7 @@ func (c *Client) GetTokenByClient(form url.Values, headers http.Header, clientIP
 
 	req, err := http.NewRequest("POST", urlStr, strings.NewReader(form.Encode()))
 	if err != nil {
-		return nil, fmt.Errorf("error al crear la solicitud: %w", err)
+		return nil, fmt.Errorf(ErrCreatingRequest, err)
 	}
 
 	// Copiamos los encabezados de la solicitud original.
@@ -324,21 +326,21 @@ func (c *Client) GetTokenByClient(form url.Values, headers http.Header, clientIP
 	// Agregamos o actualizamos el encabezado X-Forwarded-For con la IP del cliente original.
 	if clientIP != "" {
 		// Si ya existe un X-Forwarded-For, agregamos la nueva IP al inicio.
-		existingForwardedFor := req.Header.Get("X-Forwarded-For")
+		existingForwardedFor := req.Header.Get(XForwardedForHeader)
 		if existingForwardedFor != "" {
 			clientIP = clientIP + ", " + existingForwardedFor
 		}
-		req.Header.Set("X-Forwarded-For", clientIP)
+		req.Header.Set(XForwardedForHeader, clientIP)
 	}
 
 	// Aseguramos que el Content-Type sea correcto.
-	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set(ContentTypeHeader, "application/x-www-form-urlencoded")
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("error al realizar la solicitud: %w", err)
+		return nil, fmt.Errorf(ErrPerformingRequest, err)
 	}
-	defer resp.Body.Close()
+	defer closeResponseBody(resp)
 
 	// Se utiliza parseResponse para decodificar la respuesta en la estructura TokenResponse.
 	tokenResp, err := parseResponse[TokenResponse](resp)
@@ -369,26 +371,26 @@ func (c *Client) GetTokenLogto() (*TokenResponse, error) {
 	// Crear la solicitud HTTP POST
 	req, err := http.NewRequest("POST", urlStr, strings.NewReader(form.Encode()))
 	if err != nil {
-		return nil, fmt.Errorf("error al crear la solicitud: %w", err)
+		return nil, fmt.Errorf(ErrCreatingRequest, err)
 	}
-	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set(ContentTypeHeader, "application/x-www-form-urlencoded")
 
 	// Realizar la solicitud HTTP
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("error al realizar la solicitud: %w", err)
+		return nil, fmt.Errorf(ErrPerformingRequest, err)
 	}
-	defer resp.Body.Close()
+	defer closeResponseBody(resp)
 
 	// Leer el cuerpo de la respuesta para depuración
 	bodyBytes, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return nil, fmt.Errorf("error al leer la respuesta del servidor: %w", err)
+		return nil, fmt.Errorf(ErrReadingResponse, err)
 	}
 
 	// Si el código de estado no es 200, devolver el cuerpo de la respuesta como parte del error
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("error en la solicitud: código %d, respuesta: %s", resp.StatusCode, string(bodyBytes))
+		return nil, fmt.Errorf(ErrRequestFailed, resp.StatusCode, string(bodyBytes))
 	}
 
 	// Decodificar la respuesta en la estructura TokenResponse
@@ -438,7 +440,7 @@ func (c *Client) GetClientIdByToken(tokenString string) (string, error) {
 	return clientID, nil
 }
 
-// GetCustomDataJSON obtiene los datos personalizados de una aplicación y sus organizaciones.
+// GetMetadata obtiene los datos personalizados de una aplicación y sus organizaciones.
 // Retorna un string en formato JSON con los datos personalizados.
 func (c *Client) GetMetadata(token string, applicationID string) (*Metadata, error) {
 	// Obtener los datos de la aplicación
@@ -480,7 +482,7 @@ func (c *Client) GetMetadata(token string, applicationID string) (*Metadata, err
 // router.HandleFunc("/logto/token", client.HandleTokenByClient)
 func (c *Client) HandleTokenByClient(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
-		respondError(w, r, http.StatusMethodNotAllowed, "METODO_NO_PERMITIDO", "Método no permitido")
+		respondError(w, r, http.StatusMethodNotAllowed, "METODO_NO_PERMITIDO", MethodNotAllowed)
 		return
 	}
 
@@ -504,21 +506,21 @@ func (c *Client) HandleTokenByClient(w http.ResponseWriter, r *http.Request) {
 // router.HandleFunc("/logto/applications", client.HandleApplications)
 func (c *Client) HandleApplications(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
-		http.Error(w, "Método no permitido", http.StatusMethodNotAllowed)
+		http.Error(w, MethodNotAllowed, http.StatusMethodNotAllowed)
 		return
 	}
 
 	// Extraer el token del encabezado Authorization
 	authHeader := r.Header.Get("Authorization")
 	if authHeader == "" {
-		respondError(w, r, http.StatusUnauthorized, "TOKEN_NO_PROPORCIONADO", "Token no proporcionado")
+		respondError(w, r, http.StatusUnauthorized, "TOKEN_NO_PROPORCIONADO", TokenNotProvided)
 		return
 	}
 
 	// Validar que el encabezado tenga el formato "Bearer <token>"
 	parts := strings.Split(authHeader, " ")
 	if len(parts) != 2 || parts[0] != "Bearer" {
-		respondError(w, r, http.StatusUnauthorized, "FORMATO_TOKEN_INVALIDO", "Formato de token inválido")
+		respondError(w, r, http.StatusUnauthorized, "FORMATO_TOKEN_INVALIDO", InvalidTokenFormat)
 		return
 	}
 	token := parts[1]
@@ -531,7 +533,7 @@ func (c *Client) HandleApplications(w http.ResponseWriter, r *http.Request) {
 // router.HandleFunc("/logto/applications/{id}/organizations", client.HandleApplicationOrganizations)
 func (c *Client) HandleApplicationOrganizations(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
-		http.Error(w, "Método no permitido", http.StatusMethodNotAllowed)
+		http.Error(w, MethodNotAllowed, http.StatusMethodNotAllowed)
 		return
 	}
 
@@ -544,14 +546,14 @@ func (c *Client) HandleApplicationOrganizations(w http.ResponseWriter, r *http.R
 	// Extraer el token del encabezado Authorization
 	authHeader := r.Header.Get("Authorization")
 	if authHeader == "" {
-		respondError(w, r, http.StatusUnauthorized, "TOKEN_NO_PROPORCIONADO", "Token no proporcionado")
+		respondError(w, r, http.StatusUnauthorized, "TOKEN_NO_PROPORCIONADO", TokenNotProvided)
 		return
 	}
 
 	// Validar que el encabezado tenga el formato "Bearer <token>"
 	parts := strings.Split(authHeader, " ")
 	if len(parts) != 2 || parts[0] != "Bearer" {
-		respondError(w, r, http.StatusUnauthorized, "FORMATO_TOKEN_INVALIDO", "Formato de token inválido")
+		respondError(w, r, http.StatusUnauthorized, "FORMATO_TOKEN_INVALIDO", InvalidTokenFormat)
 		return
 	}
 	token := parts[1]
@@ -564,21 +566,21 @@ func (c *Client) HandleApplicationOrganizations(w http.ResponseWriter, r *http.R
 // router.HandleFunc("/logto/organizations", client.HandleOrganizations)
 func (c *Client) HandleOrganizations(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
-		http.Error(w, "Método no permitido", http.StatusMethodNotAllowed)
+		http.Error(w, MethodNotAllowed, http.StatusMethodNotAllowed)
 		return
 	}
 
 	// Extraer el token del encabezado Authorization
 	authHeader := r.Header.Get("Authorization")
 	if authHeader == "" {
-		respondError(w, r, http.StatusUnauthorized, "TOKEN_NO_PROPORCIONADO", "Token no proporcionado")
+		respondError(w, r, http.StatusUnauthorized, "TOKEN_NO_PROPORCIONADO", TokenNotProvided)
 		return
 	}
 
 	// Validar que el encabezado tenga el formato "Bearer <token>"
 	parts := strings.Split(authHeader, " ")
 	if len(parts) != 2 || parts[0] != "Bearer" {
-		respondError(w, r, http.StatusUnauthorized, "FORMATO_TOKEN_INVALIDO", "Formato de token inválido")
+		respondError(w, r, http.StatusUnauthorized, "FORMATO_TOKEN_INVALIDO", InvalidTokenFormat)
 		return
 	}
 	token := parts[1]
@@ -591,7 +593,7 @@ func (c *Client) HandleOrganizations(w http.ResponseWriter, r *http.Request) {
 // router.HandleFunc("/logto/organizations/{id}/applications", client.HandleOrganizationApplications)
 func (c *Client) HandleOrganizationApplications(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
-		http.Error(w, "Método no permitido", http.StatusMethodNotAllowed)
+		http.Error(w, MethodNotAllowed, http.StatusMethodNotAllowed)
 		return
 	}
 
@@ -604,14 +606,14 @@ func (c *Client) HandleOrganizationApplications(w http.ResponseWriter, r *http.R
 	// Extraer el token del encabezado Authorization
 	authHeader := r.Header.Get("Authorization")
 	if authHeader == "" {
-		respondError(w, r, http.StatusUnauthorized, "TOKEN_NO_PROPORCIONADO", "Token no proporcionado")
+		respondError(w, r, http.StatusUnauthorized, "TOKEN_NO_PROPORCIONADO", TokenNotProvided)
 		return
 	}
 
 	// Validar que el encabezado tenga el formato "Bearer <token>"
 	parts := strings.Split(authHeader, " ")
 	if len(parts) != 2 || parts[0] != "Bearer" {
-		respondError(w, r, http.StatusUnauthorized, "FORMATO_TOKEN_INVALIDO", "Formato de token inválido")
+		respondError(w, r, http.StatusUnauthorized, "FORMATO_TOKEN_INVALIDO", InvalidTokenFormat)
 		return
 	}
 	token := parts[1]
@@ -623,64 +625,33 @@ func (c *Client) HandleOrganizationApplications(w http.ResponseWriter, r *http.R
 // ValidateLogtoJWS valida un token JWS y retorna un JSON con la estructura solicitada.
 // En caso de error, se incluye el mensaje en data.error y se retorna nil en el error de Go.
 func (c *Client) ValidateLogtoJWS(tokenString string) []byte {
-	// Función auxiliar para construir la respuesta JSON.
-	makeResponse := func(status, msg string, header, payload map[string]interface{}) []byte {
-		data := make(map[string]interface{})
-		if status == "success" {
-			data["header"] = header
-			data["payload"] = payload
-		} else {
-			data["error"] = msg
-		}
-		resp := Response{
-			Status: status,
-			Data:   data,
-		}
-		b, _ := json.Marshal(resp)
-		return b
-	}
-
-	// 1. Dividir el token en sus tres partes (header, payload, signature)
-	parts := strings.Split(tokenString, ".")
+	parts := splitTokenParts(tokenString)
 	if len(parts) != 3 {
-		return makeResponse("error", "la representación JWS debe contener exactamente tres partes", nil, nil)
+		return makeErrorResponse("la representación JWS debe contener exactamente tres partes")
 	}
-	encodedHeader := parts[0]
-	encodedPayload := parts[1]
-	encodedSignature := parts[2]
 
-	// 2. Base64url-decode del header
-	headerBytes, err := base64.RawURLEncoding.DecodeString(encodedHeader)
+	header, err := decodeHeader(parts[0])
 	if err != nil {
-		return makeResponse("error", fmt.Sprintf("error decodificando el header: %v", err), nil, nil)
-	}
-	if !utf8.Valid(headerBytes) {
-		return makeResponse("error", "el header no es una secuencia UTF-8 válida", nil, nil)
-	}
-	var header map[string]interface{}
-	if err = json.Unmarshal(headerBytes, &header); err != nil {
-		return makeResponse("error", fmt.Sprintf("error parseando el header JSON: %v", err), nil, nil)
+		return makeErrorResponse(fmt.Sprintf("error decodificando el header: %v", err))
 	}
 
-	// 3. Extraer y verificar los parámetros requeridos: alg y kid
-	alg, ok := header["alg"].(string)
-	if !ok {
-		return makeResponse("error", "el header no contiene el parámetro 'alg'", nil, nil)
-	}
-	kid, ok := header["kid"].(string)
-	if !ok {
-		return makeResponse("error", "el header no contiene el parámetro 'kid'", nil, nil)
+	_, err = decodeSignature(parts[2])
+	if err != nil {
+		return makeErrorResponse(fmt.Sprintf("error decodificando la firma: %v", err))
 	}
 
-	// 4. Obtener el JWKS y buscar la clave que coincida con el kid
-	jwksURL := c.host + "/oidc/jwks"
-	jwks, err := getJWKS(jwksURL)
+	payload, err := decodePayload(parts[1])
+	if err != nil {
+		return makeErrorResponse(fmt.Sprintf("error decodificando el payload: %v", err))
+	}
+
+	jwks, err := getJWKS(c.host)
 	if err != nil {
 		return makeResponse("error", fmt.Sprintf("error obteniendo JWKS: %v", err), nil, nil)
 	}
 	var matchingJWK *JWK
 	for _, key := range jwks.Keys {
-		if key.Kid == kid {
+		if key.Kid == header["kid"].(string) {
 			matchingJWK = &key
 			break
 		}
@@ -689,66 +660,11 @@ func (c *Client) ValidateLogtoJWS(tokenString string) []byte {
 		return makeResponse("error", "clave pública no encontrada para el kid especificado", nil, nil)
 	}
 
-	// 5. Reconstruir el "signing input": encodedHeader + "." + encodedPayload
-	signingInput := encodedHeader + "." + encodedPayload
-
-	// 6. Base64url-decode de la firma
-	signature, err := base64.RawURLEncoding.DecodeString(encodedSignature)
-	if err != nil {
-		return makeResponse("error", fmt.Sprintf("error decodificando la firma: %v", err), nil, nil)
+	if !validateExpiration(payload) {
+		return makeErrorResponse("el token ha expirado")
 	}
 
-	// 7. Verificar la firma según el algoritmo
-	switch alg {
-	case "RS256":
-		hash := sha256.Sum256([]byte(signingInput))
-		rsaKey, err := matchingJWK.RSAKey()
-		if err != nil {
-			return makeResponse("error", fmt.Sprintf("error convirtiendo la JWK a clave RSA: %v", err), nil, nil)
-		}
-		if err = rsa.VerifyPKCS1v15(rsaKey, crypto.SHA256, hash[:], signature); err != nil {
-			return makeResponse("error", fmt.Sprintf("la verificación RSA de la firma falló: %v", err), nil, nil)
-		}
-	case "ES384":
-		ecdsaKey, err := matchingJWK.ECDSAKey()
-		if err != nil {
-			return makeResponse("error", fmt.Sprintf("error convirtiendo la JWK a clave ECDSA: %v", err), nil, nil)
-		}
-		hash := sha512.Sum384([]byte(signingInput))
-		if len(signature) != 96 {
-			return makeResponse("error", fmt.Sprintf("longitud de firma ES384 inválida: se obtuvo %d bytes, se requieren 96", len(signature)), nil, nil)
-		}
-		r := new(big.Int).SetBytes(signature[:48])
-		s := new(big.Int).SetBytes(signature[48:])
-		if !ecdsa.Verify(ecdsaKey, hash[:], r, s) {
-			return makeResponse("error", "la verificación ECDSA de la firma falló", nil, nil)
-		}
-	default:
-		return makeResponse("error", fmt.Sprintf("algoritmo no soportado: %s", alg), nil, nil)
-	}
-
-	// 8. Base64url-decode y parsear el payload
-	payloadBytes, err := base64.RawURLEncoding.DecodeString(encodedPayload)
-	if err != nil {
-		return makeResponse("error", fmt.Sprintf("error decodificando el payload: %v", err), nil, nil)
-	}
-	var payload map[string]interface{}
-	if err = json.Unmarshal(payloadBytes, &payload); err != nil {
-		return makeResponse("error", fmt.Sprintf("error parseando el payload JSON: %v", err), nil, nil)
-	}
-
-	// 9. Validar la expiración del token
-	exp, ok := payload["exp"].(float64) // El campo "exp" suele ser un número flotante en JSON
-	if !ok {
-		return makeResponse("error", "el payload no contiene el parámetro 'exp'", nil, nil)
-	}
-	currentTime := time.Now().Unix() // Tiempo actual en segundos desde la época Unix
-	if int64(exp) <= currentTime {
-		return makeResponse("error", "el token ha expirado", nil, nil)
-	}
-
-	// Si todo fue exitoso, se retorna el JSON con status "success"
-	return makeResponse("success", "", header, payload)
+	return makeSuccessResponse(header, payload)
 }
 
 /* FUNCIONES AUXILIARES	*/
@@ -772,7 +688,7 @@ func parseResponse[T any](resp *http.Response) (T, error) {
 // Función respond escribe la respuesta en el formato estándar.
 // Recibe el request para poder incluir la ruta (r.URL.Path) y la marca de tiempo.
 func respond(w http.ResponseWriter, r *http.Request, data interface{}, err error) {
-	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set(ContentTypeHeader, ApplicationJSON)
 
 	if err != nil {
 		// Determinar el código de estado a partir del error.
@@ -809,7 +725,7 @@ func respond(w http.ResponseWriter, r *http.Request, data interface{}, err error
 }
 
 func respondBasic(w http.ResponseWriter, r *http.Request, data interface{}, err error) {
-	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set(ContentTypeHeader, ApplicationJSON)
 
 	if err != nil {
 		// Determinar el código de estado a partir del error.
@@ -842,7 +758,7 @@ func respondBasic(w http.ResponseWriter, r *http.Request, data interface{}, err 
 
 // Función auxiliar para responder errores en el formato estándar sin necesidad de pasar un error.
 func respondError(w http.ResponseWriter, r *http.Request, statusCode int, codigo, mensaje string) {
-	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set(ContentTypeHeader, ApplicationJSON)
 	errorData := ErrorData{
 		Code:    codigo,
 		Message: mensaje,
@@ -872,13 +788,13 @@ func extractIDFromURL(path, resource string) string {
 // getJWKS obtiene el conjunto de claves (JWKS) desde la URL indicada.
 func getJWKS(jwksURL string) (*JWKS, error) {
 	client := http.Client{Timeout: 10 * time.Second}
-	resp, err := client.Get(jwksURL)
+	resp, err := client.Get(jwksURL + "/oidc/jwks")
 	if err != nil {
 		return nil, err
 	}
-	defer resp.Body.Close()
+	defer closeResponseBody(resp)
 
-	body, err := ioutil.ReadAll(resp.Body)
+	body, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return nil, err
 	}
@@ -944,7 +860,7 @@ func (jwk *JWK) ECDSAKey() (*ecdsa.PublicKey, error) {
 // getClientIP obtiene la IP del cliente desde el encabezado X-Forwarded-For o RemoteAddr.
 func getClientIP(req *http.Request) string {
 	// Primero, intenta obtener la IP del encabezado X-Forwarded-For
-	if forwardedFor := req.Header.Get("X-Forwarded-For"); forwardedFor != "" {
+	if forwardedFor := req.Header.Get(XForwardedForHeader); forwardedFor != "" {
 		// El encabezado puede contener múltiples IPs; la primera es la del cliente original.
 		ips := strings.Split(forwardedFor, ",")
 		return strings.TrimSpace(ips[0])
@@ -956,4 +872,78 @@ func getClientIP(req *http.Request) string {
 		return req.RemoteAddr // Fallback si no se puede dividir
 	}
 	return ip
+}
+
+func splitTokenParts(tokenString string) []string {
+	return strings.Split(tokenString, ".")
+}
+
+func decodeHeader(encodedHeader string) (map[string]interface{}, error) {
+	headerBytes, err := base64.RawURLEncoding.DecodeString(encodedHeader)
+	if err != nil || !utf8.Valid(headerBytes) {
+		return nil, err
+	}
+	var header map[string]interface{}
+	if err := json.Unmarshal(headerBytes, &header); err != nil {
+		return nil, err
+	}
+	return header, nil
+}
+
+func decodeSignature(encodedSignature string) ([]byte, error) {
+	return base64.RawURLEncoding.DecodeString(encodedSignature)
+}
+
+func decodePayload(encodedPayload string) (map[string]interface{}, error) {
+	payloadBytes, err := base64.RawURLEncoding.DecodeString(encodedPayload)
+	if err != nil {
+		return nil, err
+	}
+	var payload map[string]interface{}
+	if err := json.Unmarshal(payloadBytes, &payload); err != nil {
+		return nil, err
+	}
+	return payload, nil
+}
+
+func validateExpiration(payload map[string]interface{}) bool {
+	exp, ok := payload["exp"].(float64)
+	return ok && int64(exp) > time.Now().Unix()
+}
+
+func makeErrorResponse(message string) []byte {
+	return makeResponse("error", message, nil, nil)
+}
+
+func makeSuccessResponse(header, payload map[string]interface{}) []byte {
+	return makeResponse("success", "", header, payload)
+}
+
+// Función auxiliar para construir la respuesta JSON.
+func makeResponse(status, msg string, header, payload map[string]interface{}) []byte {
+	data := make(map[string]interface{})
+
+	if status == "success" {
+		data["header"] = header
+		data["payload"] = payload
+	} else {
+		data["error"] = msg
+	}
+
+	resp := Response{
+		Status: status,
+		Data:   data,
+	}
+
+	b, _ := json.Marshal(resp)
+	return b
+}
+
+func closeResponseBody(resp *http.Response) {
+	if resp != nil && resp.Body != nil {
+		if err := resp.Body.Close(); err != nil {
+			// Registra el error (por ejemplo, usando logs)
+			fmt.Printf("Error al cerrar el cuerpo de la respuesta: %v\n", err)
+		}
+	}
 }
