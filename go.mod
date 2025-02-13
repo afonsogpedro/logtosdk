@@ -1,3 +1,3 @@
-module github.com/afonsogpedro/LogToSdk
+module github.com/afonsogpedro/logtosdk
 
 go 1.22.1
