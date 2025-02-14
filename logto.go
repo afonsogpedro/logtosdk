@@ -522,7 +522,7 @@ func (c *Client) HandleTokenByClientGin(ctx gin.Context) {
 		}
 		form = ctx.Request.PostForm
 	} else if contentType == "application/json" {
-		var jsonData map[string]interface{}
+		var jsonData map[string]string
 		if err := ctx.ShouldBindJSON(&jsonData); err != nil {
 			ctx.JSON(http.StatusBadRequest, gin.H{
 				"error":   "JSON_INVALIDO",
@@ -533,7 +533,7 @@ func (c *Client) HandleTokenByClientGin(ctx gin.Context) {
 
 		form = make(url.Values)
 		for key, value := range jsonData {
-			form[key] = []string{value.(string)}
+			form[key] = []string{value}
 		}
 	} else {
 		ctx.JSON(http.StatusUnsupportedMediaType, gin.H{
