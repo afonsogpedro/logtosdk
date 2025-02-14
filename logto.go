@@ -126,6 +126,7 @@ const (
 	TokenNotProvided             = "Token no proporcionado"
 	InvalidTokenFormat           = "Formato de token inválido"
 	ApplicationJSON              = "application/json"
+	ApplicationForm              = "application/x-www-form-urlencoded"
 )
 
 // NewLogtoClient es el constructor del cliente, que se encarga de configurar el servidor de Logto y el cliente HTTP
@@ -335,7 +336,7 @@ func (c *Client) GetTokenByClient(form url.Values, headers http.Header, clientIP
 	}
 
 	// Aseguramos que el Content-Type sea correcto.
-	req.Header.Set(ContentTypeHeader, "application/x-www-form-urlencoded")
+	req.Header.Set(ContentTypeHeader, ApplicationForm)
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
@@ -374,7 +375,7 @@ func (c *Client) GetTokenLogto() (*TokenResponse, error) {
 	if err != nil {
 		return nil, fmt.Errorf(ErrCreatingRequest, err)
 	}
-	req.Header.Set(ContentTypeHeader, "application/x-www-form-urlencoded")
+	req.Header.Set(ContentTypeHeader, ApplicationForm)
 
 	// Realizar la solicitud HTTP
 	resp, err := c.httpClient.Do(req)
@@ -503,16 +504,16 @@ func (c *Client) HandleTokenByClient(w http.ResponseWriter, r *http.Request) {
 	respondBasic(w, r, tokenResp, err)
 }
 
-// Adaptada para usar gin.Context
-// HandleTokenByClient maneja la solicitud HTTP para obtener un token.
+// HandleTokenByClientGin Adaptada para usar gin.Context
+// Maneja la solicitud HTTP para obtener un token.
 // Los parámetros se pasan como variables y se envían en formato x-www-form-urlencoded.
-func (c *Client) HandleTokenByClientGin(ctx gin.Context) {
+func (c *Client) HandleTokenByClientGin(ctx *gin.Context) {
 	contentType := ctx.GetHeader("Content-Type")
 
 	var form url.Values
 	var err error
 
-	if contentType == "application/x-www-form-urlencoded" {
+	if contentType == ApplicationForm {
 		if err := ctx.Request.ParseForm(); err != nil {
 			ctx.JSON(http.StatusBadRequest, gin.H{
 				"error":   "FORM_INVALIDO",
