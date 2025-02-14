@@ -507,30 +507,48 @@ func (c *Client) HandleTokenByClient(w http.ResponseWriter, r *http.Request) {
 // HandleTokenByClient maneja la solicitud HTTP para obtener un token.
 // Los parámetros se pasan como variables y se envían en formato x-www-form-urlencoded.
 func (c *Client) HandleTokenByClientGin(ctx gin.Context) {
-	// Convertirgin.Context a http.ResponseWriter y *http.Request
-	w := ctx.Writer
-	r := ctx.Request
+	contentType := ctx.GetHeader("Content-Type")
 
-	// ... código existente ...
-	if r.Method != http.MethodPost {
-		respondError(w, r, http.StatusMethodNotAllowed, "METODO_NO_PERMITIDO", "Método no permitido")
+	var form map[string][]string
+	var err error
+
+	if contentType == "application/x-www-form-urlencoded" {
+		if err := ctx.Request.ParseForm(); err != nil {
+			ctx.JSON(http.StatusBadRequest, gin.H{
+				"error":   "FORM_INVALIDO",
+				"message": "Error al parsear los parámetros del formulario",
+			})
+			return
+		}
+		form = ctx.Request.PostForm
+	} else if contentType == "application/json" {
+		if err := ctx.ShouldBindJSON(&form); err != nil {
+			ctx.JSON(http.StatusBadRequest, gin.H{
+				"error":   "JSON_INVALIDO",
+				"message": "Error al parsear el JSON",
+			})
+			return
+		}
+	} else {
+		ctx.JSON(http.StatusUnsupportedMediaType, gin.H{
+			"error":   "TIPO_CONTENIDO_NO_SOPORTADO",
+			"message": "Tipo de contenido no soportado",
+		})
 		return
 	}
 
-	// Parseamos los parámetros enviados en el formulario.
-	if err := r.ParseForm(); err != nil {
-		respondError(w, r, http.StatusBadRequest, "FORM_INVALIDO", "Error al parsear los parámetros del formulario")
+	clientIP := getClientIP(ctx.Request)
+
+	tokenResp, err := c.GetTokenByClient(form, ctx.Request.Header, clientIP, c.ClientResource, c.ClientScope)
+	if err != nil {
+		ctx.JSON(http.StatusInternalServerError, gin.H{
+			"error":   "ERROR_INTERNO",
+			"message": err.Error(),
+		})
 		return
 	}
 
-	form := r.PostForm
-
-	// Obtener la IP del cliente original
-	clientIP := getClientIP(r)
-
-	// Pasamos los encabezados de la solicitud original a GetTokenByClient.
-	tokenResp, err := c.GetTokenByClient(form, r.Header, clientIP, c.ClientResource, c.ClientScope)
-	respondBasic(w, r, tokenResp, err)
+	ctx.JSON(http.StatusOK, tokenResp)
 }
 
 // HandleApplications maneja la solicitud HTTP para obtener las aplicaciones.
