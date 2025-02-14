@@ -533,7 +533,7 @@ func (c *Client) HandleTokenByClientGin(ctx gin.Context) {
 
 		form = make(url.Values)
 		for key, value := range jsonData {
-			form[key] = []string{value}
+			form.Set(key, value)
 		}
 	} else {
 		ctx.JSON(http.StatusUnsupportedMediaType, gin.H{
