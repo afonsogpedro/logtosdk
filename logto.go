@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/gin-gonic/gin"
 	"io"
 	"math/big"
 	"net"
@@ -483,6 +484,36 @@ func (c *Client) GetMetadata(token string, applicationID string) (*Metadata, err
 func (c *Client) HandleTokenByClient(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		respondError(w, r, http.StatusMethodNotAllowed, "METODO_NO_PERMITIDO", MethodNotAllowed)
+		return
+	}
+
+	// Parseamos los parámetros enviados en el formulario.
+	if err := r.ParseForm(); err != nil {
+		respondError(w, r, http.StatusBadRequest, "FORM_INVALIDO", "Error al parsear los parámetros del formulario")
+		return
+	}
+
+	form := r.PostForm
+
+	// Obtener la IP del cliente original
+	clientIP := getClientIP(r)
+
+	// Pasamos los encabezados de la solicitud original a GetTokenByClient.
+	tokenResp, err := c.GetTokenByClient(form, r.Header, clientIP, c.ClientResource, c.ClientScope)
+	respondBasic(w, r, tokenResp, err)
+}
+
+// Adaptada para usar gin.Context
+// HandleTokenByClient maneja la solicitud HTTP para obtener un token.
+// Los parámetros se pasan como variables y se envían en formato x-www-form-urlencoded.
+func (c *Client) HandleTokenByClientGin(ctx gin.Context) {
+	// Convertirgin.Context a http.ResponseWriter y *http.Request
+	w := ctx.Writer
+	r := ctx.Request
+
+	// ... código existente ...
+	if r.Method != http.MethodPost {
+		respondError(w, r, http.StatusMethodNotAllowed, "METODO_NO_PERMITIDO", "Método no permitido")
 		return
 	}
 
