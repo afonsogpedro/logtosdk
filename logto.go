@@ -509,7 +509,7 @@ func (c *Client) HandleTokenByClient(w http.ResponseWriter, r *http.Request) {
 func (c *Client) HandleTokenByClientGin(ctx gin.Context) {
 	contentType := ctx.GetHeader("Content-Type")
 
-	var form map[string][]string
+	var form url.Values
 	var err error
 
 	if contentType == "application/x-www-form-urlencoded" {
@@ -522,12 +522,18 @@ func (c *Client) HandleTokenByClientGin(ctx gin.Context) {
 		}
 		form = ctx.Request.PostForm
 	} else if contentType == "application/json" {
-		if err := ctx.ShouldBindJSON(&form); err != nil {
+		var jsonData map[string]interface{}
+		if err := ctx.ShouldBindJSON(&jsonData); err != nil {
 			ctx.JSON(http.StatusBadRequest, gin.H{
 				"error":   "JSON_INVALIDO",
 				"message": "Error al parsear el JSON",
 			})
 			return
+		}
+
+		form = make(url.Values)
+		for key, value := range jsonData {
+			form[key] = []string{value.(string)}
 		}
 	} else {
 		ctx.JSON(http.StatusUnsupportedMediaType, gin.H{
