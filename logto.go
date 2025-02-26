@@ -490,7 +490,7 @@ func (c *Client) HandleTokenByClient(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	contentType := r.Header.Get("Content-Type")
+	contentType := r.Header.Get(ContentTypeHeader)
 	mediaType, _, err := mime.ParseMediaType(contentType)
 	if err != nil {
 		respondError(w, r, http.StatusBadRequest, "CONTENT_TYPE_INVALIDO", "Cabecera Content-Type inválida")
@@ -498,56 +498,26 @@ func (c *Client) HandleTokenByClient(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var formData url.Values
-
 	switch mediaType {
-	case "application/json":
-		var jsonData map[string]interface{}
-		decoder := json.NewDecoder(r.Body)
-		if err := decoder.Decode(&jsonData); err != nil {
+	case ApplicationJSON:
+		formData, err = parseJSONBody(r)
+		if err != nil {
 			respondError(w, r, http.StatusBadRequest, "JSON_INVALIDO", "Error al decodificar JSON")
 			return
 		}
-
-		formData = make(url.Values)
-		for key, value := range jsonData {
-			switch v := value.(type) {
-			case string:
-				formData.Set(key, v)
-			case bool:
-				formData.Set(key, strconv.FormatBool(v))
-			case float64:
-				formData.Set(key, strconv.FormatFloat(v, 'f', -1, 64))
-			case []interface{}:
-				for _, item := range v {
-					formData.Add(key, fmt.Sprintf("%v", item))
-				}
-			default:
-				formData.Set(key, fmt.Sprintf("%v", v))
-			}
-		}
-
-	case "application/x-www-form-urlencoded":
-		if err := r.ParseForm(); err != nil {
+	case ApplicationForm:
+		formData, err = parseFormBody(r)
+		if err != nil {
 			respondError(w, r, http.StatusBadRequest, "FORM_INVALIDO", "Error al parsear formulario")
 			return
 		}
-		formData = r.PostForm
-
 	default:
 		respondError(w, r, http.StatusUnsupportedMediaType, "MEDIA_TYPE_NO_SOPORTADO", "Tipo de contenido no soportado")
 		return
 	}
 
 	clientIP := getClientIP(r)
-
-	tokenResp, err := c.GetTokenByClient(
-		formData,
-		r.Header,
-		clientIP,
-		c.ClientResource,
-		c.ClientScope,
-	)
-
+	tokenResp, err := c.GetTokenByClient(formData, r.Header, clientIP, c.ClientResource, c.ClientScope)
 	respondBasic(w, r, tokenResp, err)
 }
 
@@ -555,7 +525,7 @@ func (c *Client) HandleTokenByClient(w http.ResponseWriter, r *http.Request) {
 // Maneja la solicitud HTTP para obtener un token.
 // Los parámetros se pasan como variables y se envían en formato x-www-form-urlencoded.
 func (c *Client) HandleTokenByClientGin(ctx *gin.Context) {
-	contentType := ctx.GetHeader("Content-Type")
+	contentType := ctx.GetHeader(ContentTypeHeader)
 
 	var form url.Values
 	var err error
@@ -569,7 +539,7 @@ func (c *Client) HandleTokenByClientGin(ctx *gin.Context) {
 			return
 		}
 		form = ctx.Request.PostForm
-	} else if contentType == "application/json" {
+	} else if contentType == ApplicationJSON {
 		var jsonData map[string]string
 		if err := ctx.ShouldBindJSON(&jsonData); err != nil {
 			ctx.JSON(http.StatusBadRequest, gin.H{
@@ -1049,4 +1019,40 @@ func closeResponseBody(resp *http.Response) {
 			fmt.Printf("Error al cerrar el cuerpo de la respuesta: %v\n", err)
 		}
 	}
+}
+
+// Función auxiliar para parsear el cuerpo JSON
+func parseJSONBody(r *http.Request) (url.Values, error) {
+	var jsonData map[string]interface{}
+	decoder := json.NewDecoder(r.Body)
+	if err := decoder.Decode(&jsonData); err != nil {
+		return nil, err
+	}
+
+	formData := make(url.Values)
+	for key, value := range jsonData {
+		switch v := value.(type) {
+		case string:
+			formData.Set(key, v)
+		case bool:
+			formData.Set(key, strconv.FormatBool(v))
+		case float64:
+			formData.Set(key, strconv.FormatFloat(v, 'f', -1, 64))
+		case []interface{}:
+			for _, item := range v {
+				formData.Add(key, fmt.Sprintf("%v", item))
+			}
+		default:
+			formData.Set(key, fmt.Sprintf("%v", v))
+		}
+	}
+	return formData, nil
+}
+
+// Función auxiliar para parsear el cuerpo form-urlencoded
+func parseFormBody(r *http.Request) (url.Values, error) {
+	if err := r.ParseForm(); err != nil {
+		return nil, err
+	}
+	return r.PostForm, nil
 }
