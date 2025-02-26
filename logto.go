@@ -11,9 +11,11 @@ import (
 	"github.com/gin-gonic/gin"
 	"io"
 	"math/big"
+	"mime"
 	"net"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -480,27 +482,72 @@ func (c *Client) GetMetadata(token string, applicationID string) (*Metadata, err
 /* FUNCIONES PARA CONSUMIR EL SERVICIO DE LOGTO VIA HTTP */
 
 // HandleTokenByClient maneja la solicitud HTTP para obtener un token.
-// Los parámetros se pasan como variables y se envían en formato x-www-form-urlencoded.
+// Los parámetros se pasan como variables (json o form) y se envían en formato x-www-form-urlencoded.
 // router.HandleFunc("/logto/token", client.HandleTokenByClient)
 func (c *Client) HandleTokenByClient(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
-		respondError(w, r, http.StatusMethodNotAllowed, "METODO_NO_PERMITIDO", MethodNotAllowed)
+		respondError(w, r, http.StatusMethodNotAllowed, "METODO_NO_PERMITIDO", "Método no permitido")
 		return
 	}
 
-	// Parseamos los parámetros enviados en el formulario.
-	if err := r.ParseForm(); err != nil {
-		respondError(w, r, http.StatusBadRequest, "FORM_INVALIDO", "Error al parsear los parámetros del formulario")
+	contentType := r.Header.Get("Content-Type")
+	mediaType, _, err := mime.ParseMediaType(contentType)
+	if err != nil {
+		respondError(w, r, http.StatusBadRequest, "CONTENT_TYPE_INVALIDO", "Cabecera Content-Type inválida")
 		return
 	}
 
-	form := r.PostForm
+	var formData url.Values
 
-	// Obtener la IP del cliente original
+	switch mediaType {
+	case "application/json":
+		var jsonData map[string]interface{}
+		decoder := json.NewDecoder(r.Body)
+		if err := decoder.Decode(&jsonData); err != nil {
+			respondError(w, r, http.StatusBadRequest, "JSON_INVALIDO", "Error al decodificar JSON")
+			return
+		}
+
+		formData = make(url.Values)
+		for key, value := range jsonData {
+			switch v := value.(type) {
+			case string:
+				formData.Set(key, v)
+			case bool:
+				formData.Set(key, strconv.FormatBool(v))
+			case float64:
+				formData.Set(key, strconv.FormatFloat(v, 'f', -1, 64))
+			case []interface{}:
+				for _, item := range v {
+					formData.Add(key, fmt.Sprintf("%v", item))
+				}
+			default:
+				formData.Set(key, fmt.Sprintf("%v", v))
+			}
+		}
+
+	case "application/x-www-form-urlencoded":
+		if err := r.ParseForm(); err != nil {
+			respondError(w, r, http.StatusBadRequest, "FORM_INVALIDO", "Error al parsear formulario")
+			return
+		}
+		formData = r.PostForm
+
+	default:
+		respondError(w, r, http.StatusUnsupportedMediaType, "MEDIA_TYPE_NO_SOPORTADO", "Tipo de contenido no soportado")
+		return
+	}
+
 	clientIP := getClientIP(r)
 
-	// Pasamos los encabezados de la solicitud original a GetTokenByClient.
-	tokenResp, err := c.GetTokenByClient(form, r.Header, clientIP, c.ClientResource, c.ClientScope)
+	tokenResp, err := c.GetTokenByClient(
+		formData,
+		r.Header,
+		clientIP,
+		c.ClientResource,
+		c.ClientScope,
+	)
+
 	respondBasic(w, r, tokenResp, err)
 }
 
