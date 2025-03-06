@@ -516,8 +516,15 @@ func (c *Client) HandleTokenByClient(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	headersCopy := make(http.Header)
+	for k, v := range r.Header {
+		if k != "Origin" {
+			headersCopy[k] = v
+		}
+	}
+
 	clientIP := getClientIP(r)
-	tokenResp, err := c.GetTokenByClient(formData, r.Header, clientIP, c.ClientResource, c.ClientScope)
+	tokenResp, err := c.GetTokenByClient(formData, headersCopy, clientIP, c.ClientResource, c.ClientScope)
 	respondBasic(w, r, tokenResp, err)
 }
 
