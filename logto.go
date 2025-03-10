@@ -25,10 +25,11 @@ import (
 type HTTPError struct {
 	StatusCode int
 	Status     string
+	Message    string
 }
 
 func (e *HTTPError) Error() string {
-	return fmt.Sprintf("Error en la solicitud: %s", e.Status)
+	return fmt.Sprintf("Error en la solicitud: %s", e.Message)
 }
 
 type Client struct {
@@ -112,6 +113,13 @@ type JWKS struct {
 type Response struct {
 	Status string                 `json:"status"`
 	Data   map[string]interface{} `json:"data"`
+}
+
+type LogtoError struct {
+	Code             string `json:"code"`
+	Message          string `json:"message"`
+	ErrorField       string `json:"error"`
+	ErrorDescription string `json:"error_description"`
 }
 
 const (
@@ -346,12 +354,34 @@ func (c *Client) GetTokenByClient(form url.Values, headers http.Header, clientIP
 	}
 	defer closeResponseBody(resp)
 
-	// Se utiliza parseResponse para decodificar la respuesta en la estructura TokenResponse.
-	tokenResp, err := parseResponse[TokenResponse](resp)
+	bodyBytes, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("error reading response body: %w", err)
 	}
-	return &tokenResp, nil
+
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		var logtoErr LogtoError
+		if err := json.Unmarshal(bodyBytes, &logtoErr); err != nil {
+			return nil, fmt.Errorf("error decoding Logto error response: %w", err)
+		}
+		// Retornar HTTPError con el código de estado real y la descripción del error
+		return nil, &HTTPError{
+			StatusCode: resp.StatusCode,
+			Status:     logtoErr.Code,
+			Message:    logtoErr.ErrorDescription,
+		}
+	}
+
+	// Se utiliza parseResponse para decodificar la respuesta en la estructura TokenResponse.
+	if resp.StatusCode >= 200 && resp.StatusCode < 300 {
+		var tokenResp TokenResponse
+		if err := json.Unmarshal(bodyBytes, &tokenResp); err != nil {
+			return nil, fmt.Errorf("error decodificando respuesta de token: %w", err)
+		}
+		return &tokenResp, nil
+	}
+
+	return nil, fmt.Errorf("error desconocido: %s", string(bodyBytes))
 }
 
 // GetTokenLogto obtiene un token de Logto utilizando las credenciales del cliente.
@@ -525,7 +555,7 @@ func (c *Client) HandleTokenByClient(w http.ResponseWriter, r *http.Request) {
 
 	clientIP := getClientIP(r)
 	tokenResp, err := c.GetTokenByClient(formData, headersCopy, clientIP, c.ClientResource, c.ClientScope)
-	respondBasic(w, r, tokenResp, err)
+	respondAuth(w, r, tokenResp, err)
 }
 
 // HandleTokenByClientGin Adaptada para usar gin.Context
@@ -802,6 +832,41 @@ func respond(w http.ResponseWriter, r *http.Request, data interface{}, err error
 	}
 	w.WriteHeader(http.StatusOK)
 	_ = json.NewEncoder(w).Encode(standardResp)
+}
+
+func respondAuth(w http.ResponseWriter, r *http.Request, data interface{}, err error) {
+	w.Header().Set(ContentTypeHeader, ApplicationJSON)
+
+	if err != nil {
+		var httpErr *HTTPError
+		statusCode := http.StatusInternalServerError
+		message := err.Error()
+
+		// Extraer el código de estado y mensaje del error HTTP
+		if errors.As(err, &httpErr) {
+			statusCode = httpErr.StatusCode
+			message = httpErr.Message
+		}
+
+		errorData := ErrorData{
+			Code:    "ERROR",
+			Message: message,
+			Time:    time.Now().UTC().Format(time.RFC3339),
+			Route:   r.URL.Path,
+		}
+		standardResp := StandardResponse{
+			Status: "error",
+			Code:   statusCode,
+			Data:   errorData,
+		}
+		w.WriteHeader(statusCode)
+		_ = json.NewEncoder(w).Encode(standardResp)
+		return
+	}
+
+	// En caso de éxito se envuelve la data directamente.
+	w.WriteHeader(http.StatusOK)
+	_ = json.NewEncoder(w).Encode(data)
 }
 
 func respondBasic(w http.ResponseWriter, r *http.Request, data interface{}, err error) {
