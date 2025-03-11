@@ -771,33 +771,51 @@ func (c *Client) ValidateLogtoJWS(tokenString string) []byte {
 		return makeResponse("error", fmt.Sprintf("error obteniendo JWKS: %v", err), nil, nil)
 	}
 
-	// 7. Buscar JWK correspondiente
+	// 7. Validar presencia de 'kid' y 'alg' en el header
+	headerKid, ok := header["kid"].(string)
+	if !ok {
+		return makeErrorResponse("el encabezado JWT no contiene 'kid'")
+	}
+	headerAlg, ok := header["alg"].(string)
+	if !ok {
+		return makeErrorResponse("el encabezado JWT no contiene 'alg'")
+	}
+
+	// 8. Buscar JWK correspondiente con validación de 'use' y 'alg'
 	var matchingJWK *JWK
 	for _, key := range jwks.Keys {
-		if key.Kid == header["kid"].(string) {
+		if key.Kid == headerKid {
+			// Verificar 'use' si está presente
+			if key.Use != "" && key.Use != "sig" {
+				continue // Saltar claves no destinadas a firma
+			}
+			// Verificar 'alg' si está presente
+			if key.Alg != "" && key.Alg != headerAlg {
+				continue // Saltar si el algoritmo no coincide
+			}
 			matchingJWK = &key
 			break
 		}
 	}
 	if matchingJWK == nil {
-		return makeResponse("error", "clave pública no encontrada para el kid especificado", nil, nil)
-	}
-
-	// 8. Verificar algoritmo
-	alg, ok := header["alg"].(string)
-	if !ok {
-		return makeErrorResponse("el encabezado no contiene el algoritmo (alg)")
+		return makeResponse("error", "clave pública no encontrada para los parámetros kid/alg especificados", nil, nil)
 	}
 
 	// 9. Verificar firma criptográfica
 	signedData := parts[0] + "." + parts[1]
-	if err := verifySignature(matchingJWK, alg, signedData, signatureBytes); err != nil {
+	if err := verifySignature(matchingJWK, headerAlg, signedData, signatureBytes); err != nil {
 		return makeErrorResponse(fmt.Sprintf("firma inválida: %v", err))
 	}
 
 	// 10. Validar expiración
 	if !validateExpiration(payload) {
 		return makeErrorResponse("el token ha expirado")
+	}
+
+	// 11. Validar issuer (iss)
+	iss, ok := payload["iss"].(string)
+	if !ok || iss != c.host+"/oidc" {
+		return makeErrorResponse("issuer (iss) inválido")
 	}
 
 	return makeSuccessResponse(header, payload)
