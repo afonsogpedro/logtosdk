@@ -1,6 +1,7 @@
 package logtosdk
 
 import (
+	"crypto"
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rsa"
@@ -735,30 +736,42 @@ func (c *Client) HandleOrganizationApplications(w http.ResponseWriter, r *http.R
 // ValidateLogtoJWS valida un token JWS y retorna un JSON con la estructura solicitada.
 // En caso de error, se incluye el mensaje en data.error y se retorna nil en el error de Go.
 func (c *Client) ValidateLogtoJWS(tokenString string) []byte {
+	// 1. Validar caracteres del token
+	if !isValidJWT(tokenString) {
+		return makeErrorResponse("formato de token inválido: caracteres no permitidos")
+	}
+
+	// 2. Dividir en partes
 	parts := splitTokenParts(tokenString)
 	if len(parts) != 3 {
 		return makeErrorResponse("la representación JWS debe contener exactamente tres partes")
 	}
 
+	// 3. Decodificar header
 	header, err := decodeHeader(parts[0])
 	if err != nil {
 		return makeErrorResponse(fmt.Sprintf("error decodificando el header: %v", err))
 	}
 
-	_, err = decodeSignature(parts[2])
+	// 4. Decodificar firma
+	signatureBytes, err := decodeSignature(parts[2])
 	if err != nil {
 		return makeErrorResponse(fmt.Sprintf("error decodificando la firma: %v", err))
 	}
 
+	// 5. Decodificar payload
 	payload, err := decodePayload(parts[1])
 	if err != nil {
 		return makeErrorResponse(fmt.Sprintf("error decodificando el payload: %v", err))
 	}
 
+	// 6. Obtener JWKS
 	jwks, err := getJWKS(c.host)
 	if err != nil {
 		return makeResponse("error", fmt.Sprintf("error obteniendo JWKS: %v", err), nil, nil)
 	}
+
+	// 7. Buscar JWK correspondiente
 	var matchingJWK *JWK
 	for _, key := range jwks.Keys {
 		if key.Kid == header["kid"].(string) {
@@ -770,6 +783,19 @@ func (c *Client) ValidateLogtoJWS(tokenString string) []byte {
 		return makeResponse("error", "clave pública no encontrada para el kid especificado", nil, nil)
 	}
 
+	// 8. Verificar algoritmo
+	alg, ok := header["alg"].(string)
+	if !ok {
+		return makeErrorResponse("el encabezado no contiene el algoritmo (alg)")
+	}
+
+	// 9. Verificar firma criptográfica
+	signedData := parts[0] + "." + parts[1]
+	if err := verifySignature(matchingJWK, alg, signedData, signatureBytes); err != nil {
+		return makeErrorResponse(fmt.Sprintf("firma inválida: %v", err))
+	}
+
+	// 10. Validar expiración
 	if !validateExpiration(payload) {
 		return makeErrorResponse("el token ha expirado")
 	}
@@ -1127,4 +1153,90 @@ func parseFormBody(r *http.Request) (url.Values, error) {
 		return nil, err
 	}
 	return r.PostForm, nil
+}
+
+// Función para verificar caracteres válidos en el token
+func isValidJWT(token string) bool {
+	for _, c := range token {
+		if !isValidJWTChar(c) {
+			return false
+		}
+	}
+	return true
+}
+
+// Caracteres permitidos en JWT: letras, números, '-', '_', y '.'
+func isValidJWTChar(c rune) bool {
+	return (c >= 'a' && c <= 'z') ||
+		(c >= 'A' && c <= 'Z') ||
+		(c >= '0' && c <= '9') ||
+		c == '-' ||
+		c == '_' ||
+		c == '.'
+}
+
+// Función para verificar la firma criptográfica
+func verifySignature(jwk *JWK, alg string, signedData string, signature []byte) error {
+	switch jwk.Kty {
+	case "RSA":
+		publicKey, err := jwk.RSAKey()
+		if err != nil {
+			return fmt.Errorf("clave RSA inválida: %w", err)
+		}
+		return verifyRSASignature(publicKey, alg, signedData, signature)
+	case "EC":
+		publicKey, err := jwk.ECDSAKey()
+		if err != nil {
+			return fmt.Errorf("clave EC inválida: %w", err)
+		}
+		return verifyECDSASignature(publicKey, alg, signedData, signature)
+	default:
+		return fmt.Errorf("tipo de clave no soportado: %s", jwk.Kty)
+	}
+}
+
+// Verificación RSA
+func verifyRSASignature(pubKey *rsa.PublicKey, alg string, data string, signature []byte) error {
+	hash := getHashAlgorithm(alg)
+	hasher := hash.New()
+	hasher.Write([]byte(data))
+	hashed := hasher.Sum(nil)
+
+	return rsa.VerifyPKCS1v15(pubKey, hash, hashed, signature)
+}
+
+// Verificación ECDSA
+func verifyECDSASignature(pubKey *ecdsa.PublicKey, alg string, data string, signature []byte) error {
+	hash := getHashAlgorithm(alg)
+	hasher := hash.New()
+	hasher.Write([]byte(data))
+	hashed := hasher.Sum(nil)
+
+	// La firma debe ser un par (r, s) concatenado
+	keySize := pubKey.Curve.Params().BitSize / 8
+	if len(signature) != 2*keySize {
+		return fmt.Errorf("longitud de firma inválida")
+	}
+
+	r := new(big.Int).SetBytes(signature[:keySize])
+	s := new(big.Int).SetBytes(signature[keySize:])
+
+	if !ecdsa.Verify(pubKey, hashed, r, s) {
+		return errors.New("firma EC inválida")
+	}
+	return nil
+}
+
+// Obtener algoritmo de hash
+func getHashAlgorithm(alg string) crypto.Hash {
+	switch alg {
+	case "RS256", "ES256":
+		return crypto.SHA256
+	case "RS384", "ES384":
+		return crypto.SHA384
+	case "RS512", "ES512":
+		return crypto.SHA512
+	default:
+		panic("algoritmo no soportado: " + alg)
+	}
 }
