@@ -738,84 +738,95 @@ func (c *Client) HandleOrganizationApplications(w http.ResponseWriter, r *http.R
 func (c *Client) ValidateLogtoJWS(tokenString string) []byte {
 	// 1. Validar caracteres del token
 	if !isValidJWT(tokenString) {
-		return makeErrorResponse("formato de token inválido: caracteres no permitidos")
+		fmt.Printf("Error de token: formato inválido (caracteres no permitidos)\n")
+		return makeErrorResponse("error de token: es inválido")
 	}
 
 	// 2. Dividir en partes
 	parts := splitTokenParts(tokenString)
 	if len(parts) != 3 {
-		return makeErrorResponse("la representación JWS debe contener exactamente tres partes")
+		fmt.Printf("Error de token: la representación JWS debe contener exactamente tres partes\n")
+		return makeErrorResponse("error de token: es inválido")
 	}
 
 	// 3. Decodificar header
 	header, err := decodeHeader(parts[0])
 	if err != nil {
-		return makeErrorResponse(fmt.Sprintf("error decodificando el header: %v", err))
+		fmt.Printf("Error al decodificar el header del token: %v\n", err)
+		return makeErrorResponse("error de token: es inválido")
 	}
 
 	// 4. Decodificar firma
 	signatureBytes, err := decodeSignature(parts[2])
 	if err != nil {
-		return makeErrorResponse(fmt.Sprintf("error decodificando la firma: %v", err))
+		fmt.Printf("Error al decodificar la firma del token: %v\n", err)
+		return makeErrorResponse("error de token: es inválido")
 	}
 
 	// 5. Decodificar payload
 	payload, err := decodePayload(parts[1])
 	if err != nil {
-		return makeErrorResponse(fmt.Sprintf("error decodificando el payload: %v", err))
+		fmt.Printf("Error al decodificar el payload del token: %v\n", err)
+		return makeErrorResponse("error de token: es inválido")
 	}
 
 	// 6. Obtener JWKS
 	jwks, err := getJWKS(c.host)
 	if err != nil {
-		return makeResponse("error", fmt.Sprintf("error obteniendo JWKS: %v", err), nil, nil)
+		fmt.Printf("Error al obtener JWKS: %v\n", err)
+		return makeResponse("error", "error de token: es inválido", nil, nil)
 	}
 
-	// 7. Validar presencia de 'kid' y 'alg' en el header
+	// 7. Validar 'kid' y 'alg' en el header
 	headerKid, ok := header["kid"].(string)
 	if !ok {
-		return makeErrorResponse("el encabezado JWT no contiene 'kid'")
+		fmt.Println("Error de token: el encabezado JWT no contiene 'kid'")
+		return makeErrorResponse("error de token: es inválido")
 	}
 	headerAlg, ok := header["alg"].(string)
 	if !ok {
-		return makeErrorResponse("el encabezado JWT no contiene 'alg'")
+		fmt.Println("Error de token: el encabezado JWT no contiene 'alg'")
+		return makeErrorResponse("error de token: es inválido")
 	}
 
-	// 8. Buscar JWK correspondiente con validación de 'use' y 'alg'
+	// 8. Buscar JWK correspondiente
 	var matchingJWK *JWK
 	for _, key := range jwks.Keys {
 		if key.Kid == headerKid {
-			// Verificar 'use' si está presente
 			if key.Use != "" && key.Use != "sig" {
-				continue // Saltar claves no destinadas a firma
+				continue
 			}
-			// Verificar 'alg' si está presente
 			if key.Alg != "" && key.Alg != headerAlg {
-				continue // Saltar si el algoritmo no coincide
+				continue
 			}
 			matchingJWK = &key
 			break
 		}
 	}
 	if matchingJWK == nil {
-		return makeResponse("error", "clave pública no encontrada para los parámetros kid/alg especificados", nil, nil)
+		fmt.Printf("Error de token: clave pública no encontrada para kid=%s, alg=%s\n", headerKid, headerAlg)
+		return makeErrorResponse("error de token: es inválido")
 	}
 
-	// 9. Verificar firma criptográfica
+	// 9. Verificar firma
 	signedData := parts[0] + "." + parts[1]
 	if err := verifySignature(matchingJWK, headerAlg, signedData, signatureBytes); err != nil {
-		return makeErrorResponse(fmt.Sprintf("firma inválida: %v", err))
+		fmt.Printf("Error de verificación de firma: %v\n", err)
+		return makeErrorResponse("error de token: es inválido")
 	}
 
 	// 10. Validar expiración
 	if !validateExpiration(payload) {
-		return makeErrorResponse("el token ha expirado")
+		exp, _ := payload["exp"].(float64)
+		fmt.Printf("Error de token expirado: exp=%v\n", exp)
+		return makeErrorResponse("error de token: ha expirado")
 	}
 
 	// 11. Validar issuer (iss)
 	iss, ok := payload["iss"].(string)
 	if !ok || iss != c.host+"/oidc" {
-		return makeErrorResponse("issuer (iss) inválido")
+		fmt.Printf("Error de token: emisor (iss) inválido: %s\n", iss)
+		return makeErrorResponse("error de token: es inválido")
 	}
 
 	return makeSuccessResponse(header, payload)
@@ -1105,14 +1116,14 @@ func makeErrorResponse(message string) []byte {
 }
 
 func makeSuccessResponse(header, payload map[string]interface{}) []byte {
-	return makeResponse("success", "", header, payload)
+	return makeResponse("éxito", "", header, payload)
 }
 
 // Función auxiliar para construir la respuesta JSON.
 func makeResponse(status, msg string, header, payload map[string]interface{}) []byte {
 	data := make(map[string]interface{})
 
-	if status == "success" {
+	if status == "éxito" {
 		data["header"] = header
 		data["payload"] = payload
 	} else {
