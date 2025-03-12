@@ -365,11 +365,24 @@ func (c *Client) GetTokenByClient(form url.Values, headers http.Header, clientIP
 		if err := json.Unmarshal(bodyBytes, &logtoErr); err != nil {
 			return nil, fmt.Errorf("error decoding Logto error response: %w", err)
 		}
+		errES := logtoErr.ErrorDescription
+		switch errES {
+		case "client authentication failed":
+			errES = "autenticación del cliente falló"
+		case "no client authentication mechanism provided":
+			errES = "no se proporcionó un mecanismo de autenticación del cliente"
+		default:
+			errES = logtoErr.ErrorDescription
+		}
+		if strings.HasPrefix(logtoErr.ErrorField, "invalid client") {
+			errES = "cliente inválido"
+		}
+
 		// Retornar HTTPError con el código de estado real y la descripción del error
 		return nil, &HTTPError{
 			StatusCode: resp.StatusCode,
 			Status:     logtoErr.Code,
-			Message:    logtoErr.ErrorDescription,
+			Message:    errES,
 		}
 	}
 
