@@ -374,8 +374,8 @@ func (c *Client) GetTokenByClient(form url.Values, headers http.Header, clientIP
 		default:
 			errES = logtoErr.ErrorDescription
 		}
-		if strings.HasPrefix(logtoErr.ErrorField, "invalid client") {
-			errES = "cliente inválido"
+		if strings.HasPrefix(errES, "invalid client") {
+			errES = strings.Replace(errES, "invalid client", "cliente inválido", 1)
 		}
 
 		// Retornar HTTPError con el código de estado real y la descripción del error
