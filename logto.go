@@ -1116,14 +1116,14 @@ func makeErrorResponse(message string) []byte {
 }
 
 func makeSuccessResponse(header, payload map[string]interface{}) []byte {
-	return makeResponse("éxito", "", header, payload)
+	return makeResponse("success", "", header, payload)
 }
 
 // Función auxiliar para construir la respuesta JSON.
 func makeResponse(status, msg string, header, payload map[string]interface{}) []byte {
 	data := make(map[string]interface{})
 
-	if status == "éxito" {
+	if status == "success" {
 		data["header"] = header
 		data["payload"] = payload
 	} else {
