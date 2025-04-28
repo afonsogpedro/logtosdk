@@ -272,6 +272,51 @@ func (c *Client) GetOrganizationsApplication(token string, applicationID string)
 	return orgs, nil
 }
 
+// GetApplicationOrganizations obtiene las aplicaciones asociadas a una organización.
+// Retorna una lista de Aplicaciones.
+func (c *Client) GetApplicationOrganizations(token string, applicationID string) ([]Application, error) {
+	// Construir la URL correctamente
+	requestURL := fmt.Sprintf("%s/api/applications/%s/organizations", c.host, applicationID)
+
+	// Crear la solicitud HTTP GET
+	req, err := http.NewRequest("GET", requestURL, nil)
+	if err != nil {
+		return nil, fmt.Errorf(ErrCreatingRequest, err)
+	}
+	req.Header.Set("Authorization", BearerPrefix+token)
+
+	// Realizar la solicitud HTTP
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf(ErrPerformingRequest, err)
+	}
+	defer closeResponseBody(resp)
+
+	// Leer el cuerpo de la respuesta
+	bodyBytes, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf(ErrReadingResponse, err)
+	}
+
+	// Verificar el código de estado
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf(ErrRequestFailed, resp.StatusCode, string(bodyBytes))
+	}
+
+	// Verificar si la respuesta está vacía
+	if len(bodyBytes) == 0 {
+		return nil, fmt.Errorf(ErrEmptyResponse)
+	}
+
+	// Deserializar la respuesta en una lista de organizaciones
+	var apps []Application
+	if err := json.Unmarshal(bodyBytes, &apps); err != nil {
+		return nil, fmt.Errorf(ErrDeserializingJSONResponse, err)
+	}
+
+	return apps, nil
+}
+
 // GetMetaOrganizations obtiene las organizaciones asociadas a un cliente.
 // Retorna una lista de Organization.
 func (c *Client) GetMetaOrganizations(token string, applicationID string) ([]Organization, error) {
