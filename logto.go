@@ -364,83 +364,101 @@ func (c *Client) GetMetaOrganizations(token string, applicationID string) ([]Org
 
 // GetTokenByClient obtiene un token de Logto utilizando las credenciales del cliente.
 func (c *Client) GetTokenByClient(form url.Values, headers http.Header, clientIP, resource, scope string) (*TokenResponse, error) {
-	urlStr := c.host + "/oidc/token"
-	form.Set("resource", resource)
-	form.Set("grant_type", "client_credentials")
-	form.Set("scope", scope)
+    urlStr := c.host + "/oidc/token"
+    form.Set("resource", resource)
+    form.Set("grant_type", "client_credentials")
+    form.Set("scope", scope)
 
-	req, err := http.NewRequest("POST", urlStr, strings.NewReader(form.Encode()))
-	if err != nil {
-		return nil, fmt.Errorf(ErrCreatingRequest, err)
-	}
+    req, err := http.NewRequest("POST", urlStr, strings.NewReader(form.Encode()))
+    if err != nil {
+        return nil, fmt.Errorf(ErrCreatingRequest, err)
+    }
 
-	// Copiamos los encabezados de la solicitud original.
-	for key, values := range headers {
-		for _, value := range values {
-			req.Header.Add(key, value)
-		}
-	}
+    // Copiamos los encabezados de la solicitud original.
+    for key, values := range headers {
+        for _, value := range values {
+            req.Header.Add(key, value)
+        }
+    }
 
-	// Agregamos o actualizamos el encabezado X-Forwarded-For con la IP del cliente original.
-	if clientIP != "" {
-		// Si ya existe un X-Forwarded-For, agregamos la nueva IP al inicio.
-		existingForwardedFor := req.Header.Get(XForwardedForHeader)
-		if existingForwardedFor != "" {
-			clientIP = clientIP + ", " + existingForwardedFor
-		}
-		req.Header.Set(XForwardedForHeader, clientIP)
-	}
+    // Agregamos o actualizamos el encabezado X-Forwarded-For con la IP del cliente original.
+    if clientIP != "" {
+        existingForwardedFor := req.Header.Get(XForwardedForHeader)
+        if existingForwardedFor != "" {
+            clientIP = clientIP + ", " + existingForwardedFor
+        }
+        req.Header.Set(XForwardedForHeader, clientIP)
+    }
 
-	// Aseguramos que el Content-Type sea correcto.
-	req.Header.Set(ContentTypeHeader, ApplicationForm)
+    // Aseguramos que el Content-Type sea correcto.
+    req.Header.Set(ContentTypeHeader, ApplicationForm)
 
-	resp, err := c.httpClient.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf(ErrPerformingRequest, err)
-	}
-	defer closeResponseBody(resp)
+    resp, err := c.httpClient.Do(req)
+    if err != nil {
+        return nil, fmt.Errorf(ErrPerformingRequest, err)
+    }
+    defer closeResponseBody(resp)
 
-	bodyBytes, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return nil, fmt.Errorf("error reading response body: %w", err)
-	}
+    bodyBytes, err := io.ReadAll(resp.Body)
+    if err != nil {
+        return nil, fmt.Errorf("error reading response body: %w", err)
+    }
 
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		var logtoErr LogtoError
-		if err := json.Unmarshal(bodyBytes, &logtoErr); err != nil {
-			return nil, fmt.Errorf("error decoding Logto error response: %w", err)
-		}
-		errES := logtoErr.ErrorDescription
-		switch errES {
-		case "client authentication failed":
-			errES = "autenticación del cliente falló"
-		case "no client authentication mechanism provided":
-			errES = "no se proporcionó un mecanismo de autenticación del cliente"
-		default:
-			errES = logtoErr.ErrorDescription
-		}
-		if strings.HasPrefix(errES, "invalid client") {
-			errES = strings.Replace(errES, "invalid client", "cliente inválido", 1)
-		}
+    // Detectar compresión y descomprimir si es necesario
+    var reader io.Reader
+    switch resp.Header.Get("Content-Encoding") {
+    case "gzip":
+        gzipReader, err := gzip.NewReader(bytes.NewReader(bodyBytes))
+        if err != nil {
+            return nil, fmt.Errorf("error creando lector gzip: %w", err)
+        }
+        defer gzipReader.Close()
+        reader = gzipReader
+    default:
+        reader = bytes.NewReader(bodyBytes)
+    }
 
-		// Retornar HTTPError con el código de estado real y la descripción del error
-		return nil, &HTTPError{
-			StatusCode: resp.StatusCode,
-			Status:     logtoErr.Code,
-			Message:    errES,
-		}
-	}
+    uncompressedBody, err := io.ReadAll(reader)
+    if err != nil {
+        return nil, fmt.Errorf("error descomprimiendo cuerpo: %w", err)
+    }
 
-	// Se utiliza parseResponse para decodificar la respuesta en la estructura TokenResponse.
-	if resp.StatusCode >= 200 && resp.StatusCode < 300 {
-		var tokenResp TokenResponse
-		if err := json.Unmarshal(bodyBytes, &tokenResp); err != nil {
-			return nil, fmt.Errorf("error decodificando respuesta de token: %w", err)
-		}
-		return &tokenResp, nil
-	}
+    // Manejo de errores en la respuesta
+    if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+        var logtoErr LogtoError
+        if err := json.Unmarshal(uncompressedBody, &logtoErr); err != nil {
+            return nil, fmt.Errorf("error decoding Logto error response: %w", err)
+        }
 
-	return nil, fmt.Errorf("error desconocido: %s", string(bodyBytes))
+        errES := logtoErr.ErrorDescription
+        switch errES {
+        case "client authentication failed":
+            errES = "autenticación del cliente falló"
+        case "no client authentication mechanism provided":
+            errES = "no se proporcionó un mecanismo de autenticación del cliente"
+        default:
+            errES = logtoErr.ErrorDescription
+        }
+
+        if strings.HasPrefix(errES, "invalid client") {
+            errES = strings.Replace(errES, "invalid client", "cliente inválido", 1)
+        }
+
+        // Retornar HTTPError con el código de estado real y la descripción del error
+        return nil, &HTTPError{
+            StatusCode: resp.StatusCode,
+            Status:     logtoErr.Code,
+            Message:    errES,
+        }
+    }
+
+    // Procesar respuesta exitosa
+    var tokenResp TokenResponse
+    if err := json.Unmarshal(uncompressedBody, &tokenResp); err != nil {
+        return nil, fmt.Errorf("error decodificando respuesta de token: %w", err)
+    }
+
+    return &tokenResp, nil
 }
 
 // GetTokenLogto obtiene un token de Logto utilizando las credenciales del cliente.
