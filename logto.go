@@ -1,6 +1,8 @@
 package logtosdk
 
 import (
+	"bytes"
+	"compress/gzip"
 	"crypto"
 	"crypto/ecdsa"
 	"crypto/elliptic"
