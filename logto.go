@@ -907,6 +907,41 @@ func (c *Client) ValidateLogtoJWS(tokenString string) []byte {
 		return makeErrorResponse("error de token: es inválido")
 	}
 
+	// 12. Validar audience (aud) - Primero contra ClientResource, luego contra ClientId
+	audValue, ok := payload["aud"]
+	if !ok {
+		fmt.Println("Error de token: no contiene 'aud'")
+		return makeErrorResponse("error de token: es inválido")
+	}
+
+	// Valores esperados
+	expectedResource := c.ClientResource
+	expectedClientId := c.ClientId
+
+	// Manejar diferentes representaciones de 'aud' (string o array de strings)
+	validAud := false
+	switch aud := audValue.(type) {
+	case string:
+		// Primero verificar contra ClientResource, luego contra ClientId
+		validAud = (aud == expectedResource) || (aud == expectedClientId)
+	case []interface{}:
+		for _, v := range aud {
+			if a, ok := v.(string); ok {
+				// Verificar contra ambos valores esperados
+				if a == expectedResource || a == expectedClientId {
+					validAud = true
+					break
+				}
+			}
+		}
+	}
+
+	if !validAud {
+		fmt.Printf("Error de token: audiencia inválida. Esperado '%s' o '%s', Obtenido: %v\n", 
+			expectedResource, expectedClientId, audValue)
+		return makeErrorResponse("error de token: es inválido")
+	}
+
 	return makeSuccessResponse(header, payload)
 }
 
