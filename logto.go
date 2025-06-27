@@ -3,6 +3,7 @@ package logtosdk
 import (
 	"bytes"
 	"compress/gzip"
+	"context"
 	"crypto"
 	"crypto/ecdsa"
 	"crypto/elliptic"
@@ -43,6 +44,8 @@ type Client struct {
 	Resource       string
 	ClientResource string
 	ClientScope    string
+	jwksCache      *JWKS
+	jwksCacheExp   time.Time
 }
 
 type Application struct {
@@ -165,302 +168,152 @@ func NewLogtoClient(host string, httpClient *http.Client, cliendId, clientSecret
 // GetApplications obtiene la información de todas las aplicaciones.
 // Retorna un slice de Application.
 func (c *Client) GetApplications(token string) ([]Application, error) {
-	req, err := http.NewRequest("GET", c.host+"/api/applications", nil)
-	if err != nil {
-		return nil, fmt.Errorf(ErrCreatingRequest, err)
-	}
-	req.Header.Set("Authorization", BearerPrefix+token)
-	resp, err := c.httpClient.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf(ErrPerformingRequest, err)
-	}
-	defer closeResponseBody(resp)
-	return parseResponse[[]Application](resp)
+	var apps []Application
+	err := c.getAndUnmarshal("/api/applications", token, &apps)
+	return apps, err
 }
 
 // GetMetaApplications obtiene la información de una aplicación.
 // Retorna un Application.
 func (c *Client) GetMetaApplications(token string, applicationID string) (*Application, error) {
-	requestURL := fmt.Sprintf("%s/api/applications/%s", c.host, applicationID)
-	req, err := http.NewRequest("GET", requestURL, nil)
-	if err != nil {
-		return nil, fmt.Errorf(ErrCreatingRequest, err)
-	}
-	req.Header.Set("Authorization", BearerPrefix+token)
-	resp, err := c.httpClient.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf(ErrPerformingRequest, err)
-	}
-	defer closeResponseBody(resp)
-
-	bodyBytes, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return nil, fmt.Errorf(ErrReadingResponse, err)
-	}
-
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf(ErrRequestFailed, resp.StatusCode, string(bodyBytes))
-	}
-
-	if len(bodyBytes) == 0 {
-		return nil, fmt.Errorf(ErrEmptyResponse)
-	}
-
-	var app Application
-	if err := json.Unmarshal(bodyBytes, &app); err != nil {
-		return nil, fmt.Errorf(ErrDeserializingJSONResponse, err)
-	}
-	return &app, nil
+	var app *Application
+	path := fmt.Sprintf("/api/applications/%s", applicationID)
+	err := c.getAndUnmarshal(path, token, &app)
+	return app, err
 }
 
 // GetOrganizations obtiene todas las organizaciones.
 // Retorna una lista de Organization.
 func (c *Client) GetOrganizations(token string) ([]Organization, error) {
-	req, err := http.NewRequest("GET", c.host+"/api/organizations", nil)
-	if err != nil {
-		return nil, fmt.Errorf(ErrCreatingRequest, err)
-	}
-	req.Header.Set("Authorization", BearerPrefix+token)
-	resp, err := c.httpClient.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf(ErrPerformingRequest, err)
-	}
-	defer closeResponseBody(resp)
-	return parseResponse[[]Organization](resp)
+	var orgs []Organization
+	err := c.getAndUnmarshal("/api/organizations", token, &orgs)
+	return orgs, err
 }
 
 // GetOrganizationsApplication obtiene las organizaciones asociadas a una aplicación.
 // Retorna una lista de Organization.
 func (c *Client) GetOrganizationsApplication(token string, applicationID string) ([]Organization, error) {
-	// Construir la URL correctamente
-	requestURL := fmt.Sprintf("%s/api/organizations/%s/applications", c.host, applicationID)
-
-	// Crear la solicitud HTTP GET
-	req, err := http.NewRequest("GET", requestURL, nil)
-	if err != nil {
-		return nil, fmt.Errorf(ErrCreatingRequest, err)
-	}
-	req.Header.Set("Authorization", BearerPrefix+token)
-
-	// Realizar la solicitud HTTP
-	resp, err := c.httpClient.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf(ErrPerformingRequest, err)
-	}
-	defer closeResponseBody(resp)
-
-	// Leer el cuerpo de la respuesta
-	bodyBytes, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return nil, fmt.Errorf(ErrReadingResponse, err)
-	}
-
-	// Verificar el código de estado
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf(ErrRequestFailed, resp.StatusCode, string(bodyBytes))
-	}
-
-	// Verificar si la respuesta está vacía
-	if len(bodyBytes) == 0 {
-		return nil, fmt.Errorf(ErrEmptyResponse)
-	}
-
-	// Deserializar la respuesta en una lista de organizaciones
 	var orgs []Organization
-	if err := json.Unmarshal(bodyBytes, &orgs); err != nil {
-		return nil, fmt.Errorf(ErrDeserializingJSONResponse, err)
-	}
-
-	return orgs, nil
+	path := fmt.Sprintf("/api/organizations/%s/applications", applicationID)
+	err := c.getAndUnmarshal(path, token, &orgs)
+	return orgs, err
 }
 
 // GetApplicationOrganizations obtiene las aplicaciones asociadas a una organización.
 // Retorna una lista de Aplicaciones.
 func (c *Client) GetApplicationOrganizations(token string, applicationID string) ([]Application, error) {
-	// Construir la URL correctamente
-	requestURL := fmt.Sprintf("%s/api/applications/%s/organizations", c.host, applicationID)
-
-	// Crear la solicitud HTTP GET
-	req, err := http.NewRequest("GET", requestURL, nil)
-	if err != nil {
-		return nil, fmt.Errorf(ErrCreatingRequest, err)
-	}
-	req.Header.Set("Authorization", BearerPrefix+token)
-
-	// Realizar la solicitud HTTP
-	resp, err := c.httpClient.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf(ErrPerformingRequest, err)
-	}
-	defer closeResponseBody(resp)
-
-	// Leer el cuerpo de la respuesta
-	bodyBytes, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return nil, fmt.Errorf(ErrReadingResponse, err)
-	}
-
-	// Verificar el código de estado
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf(ErrRequestFailed, resp.StatusCode, string(bodyBytes))
-	}
-
-	// Verificar si la respuesta está vacía
-	if len(bodyBytes) == 0 {
-		return nil, fmt.Errorf(ErrEmptyResponse)
-	}
-
-	// Deserializar la respuesta en una lista de organizaciones
 	var apps []Application
-	if err := json.Unmarshal(bodyBytes, &apps); err != nil {
-		return nil, fmt.Errorf(ErrDeserializingJSONResponse, err)
-	}
-
-	return apps, nil
+	path := fmt.Sprintf("/api/applications/%s/organizations", applicationID)
+	err := c.getAndUnmarshal(path, token, &apps)
+	return apps, err
 }
 
 // GetMetaOrganizations obtiene las organizaciones asociadas a un cliente.
 // Retorna una lista de Organization.
 func (c *Client) GetMetaOrganizations(token string, applicationID string) ([]Organization, error) {
-	// Construir la URL correctamente
-	requestURL := fmt.Sprintf("%s/api/applications/%s/organizations", c.host, applicationID)
+	var orgs []Organization
+	path := fmt.Sprintf("/api/applications/%s/organizations", applicationID)
+	err := c.getAndUnmarshal(path, token, &orgs)
+	return orgs, err
+}
 
-	// Crear la solicitud HTTP GET
-	req, err := http.NewRequest("GET", requestURL, nil)
+// GetTokenByClient obtiene un token de Logto utilizando las credenciales del cliente.
+func (c *Client) GetTokenByClient(form url.Values, headers http.Header, clientIP, resource, scope string) (*TokenResponse, error) {
+	urlStr := c.host + "/oidc/token"
+	form.Set("resource", resource)
+	form.Set("grant_type", "client_credentials")
+	form.Set("scope", scope)
+
+	req, err := http.NewRequest("POST", urlStr, strings.NewReader(form.Encode()))
 	if err != nil {
 		return nil, fmt.Errorf(ErrCreatingRequest, err)
 	}
-	req.Header.Set("Authorization", BearerPrefix+token)
 
-	// Realizar la solicitud HTTP
+	// Copiamos los encabezados de la solicitud original.
+	for key, values := range headers {
+		for _, value := range values {
+			req.Header.Add(key, value)
+		}
+	}
+
+	// Agregamos o actualizamos el encabezado X-Forwarded-For con la IP del cliente original.
+	if clientIP != "" {
+		existingForwardedFor := req.Header.Get(XForwardedForHeader)
+		if existingForwardedFor != "" {
+			clientIP = clientIP + ", " + existingForwardedFor
+		}
+		req.Header.Set(XForwardedForHeader, clientIP)
+	}
+
+	// Aseguramos que el Content-Type sea correcto.
+	req.Header.Set(ContentTypeHeader, ApplicationForm)
+
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf(ErrPerformingRequest, err)
 	}
 	defer closeResponseBody(resp)
 
-	// Leer el cuerpo de la respuesta
 	bodyBytes, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return nil, fmt.Errorf(ErrReadingResponse, err)
+		return nil, fmt.Errorf("error reading response body: %w", err)
 	}
 
-	// Verificar el código de estado
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf(ErrRequestFailed, resp.StatusCode, string(bodyBytes))
+	// Detectar compresión y descomprimir si es necesario
+	var reader io.Reader
+	switch resp.Header.Get("Content-Encoding") {
+	case "gzip":
+		gzipReader, err := gzip.NewReader(bytes.NewReader(bodyBytes))
+		if err != nil {
+			return nil, fmt.Errorf("error creando lector gzip: %w", err)
+		}
+		defer gzipReader.Close()
+		reader = gzipReader
+	default:
+		reader = bytes.NewReader(bodyBytes)
 	}
 
-	// Verificar si la respuesta está vacía
-	if len(bodyBytes) == 0 {
-		return nil, fmt.Errorf(ErrEmptyResponse)
+	uncompressedBody, err := io.ReadAll(reader)
+	if err != nil {
+		return nil, fmt.Errorf("error descomprimiendo cuerpo: %w", err)
 	}
 
-	// Deserializar la respuesta en una lista de organizaciones
-	var orgs []Organization
-	if err := json.Unmarshal(bodyBytes, &orgs); err != nil {
-		return nil, fmt.Errorf(ErrDeserializingJSONResponse, err)
+	// Manejo de errores en la respuesta
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		var logtoErr LogtoError
+		if err := json.Unmarshal(uncompressedBody, &logtoErr); err != nil {
+			return nil, fmt.Errorf("error decoding Logto error response: %w", err)
+		}
+
+		errES := logtoErr.ErrorDescription
+		switch errES {
+		case "client authentication failed":
+			errES = "autenticación del cliente falló"
+		case "no client authentication mechanism provided":
+			errES = "no se proporcionó un mecanismo de autenticación del cliente"
+		default:
+			errES = logtoErr.ErrorDescription
+		}
+
+		if strings.HasPrefix(errES, "invalid client") {
+			errES = strings.Replace(errES, "invalid client", "cliente inválido", 1)
+		}
+
+		// Retornar HTTPError con el código de estado real y la descripción del error
+		return nil, &HTTPError{
+			StatusCode: resp.StatusCode,
+			Status:     logtoErr.Code,
+			Message:    errES,
+		}
 	}
 
-	return orgs, nil
-}
+	// Procesar respuesta exitosa
+	var tokenResp TokenResponse
+	if err := json.Unmarshal(uncompressedBody, &tokenResp); err != nil {
+		return nil, fmt.Errorf("error decodificando respuesta de token: %w", err)
+	}
 
-// GetTokenByClient obtiene un token de Logto utilizando las credenciales del cliente.
-func (c *Client) GetTokenByClient(form url.Values, headers http.Header, clientIP, resource, scope string) (*TokenResponse, error) {
-    urlStr := c.host + "/oidc/token"
-    form.Set("resource", resource)
-    form.Set("grant_type", "client_credentials")
-    form.Set("scope", scope)
-
-    req, err := http.NewRequest("POST", urlStr, strings.NewReader(form.Encode()))
-    if err != nil {
-        return nil, fmt.Errorf(ErrCreatingRequest, err)
-    }
-
-    // Copiamos los encabezados de la solicitud original.
-    for key, values := range headers {
-        for _, value := range values {
-            req.Header.Add(key, value)
-        }
-    }
-
-    // Agregamos o actualizamos el encabezado X-Forwarded-For con la IP del cliente original.
-    if clientIP != "" {
-        existingForwardedFor := req.Header.Get(XForwardedForHeader)
-        if existingForwardedFor != "" {
-            clientIP = clientIP + ", " + existingForwardedFor
-        }
-        req.Header.Set(XForwardedForHeader, clientIP)
-    }
-
-    // Aseguramos que el Content-Type sea correcto.
-    req.Header.Set(ContentTypeHeader, ApplicationForm)
-
-    resp, err := c.httpClient.Do(req)
-    if err != nil {
-        return nil, fmt.Errorf(ErrPerformingRequest, err)
-    }
-    defer closeResponseBody(resp)
-
-    bodyBytes, err := io.ReadAll(resp.Body)
-    if err != nil {
-        return nil, fmt.Errorf("error reading response body: %w", err)
-    }
-
-    // Detectar compresión y descomprimir si es necesario
-    var reader io.Reader
-    switch resp.Header.Get("Content-Encoding") {
-    case "gzip":
-        gzipReader, err := gzip.NewReader(bytes.NewReader(bodyBytes))
-        if err != nil {
-            return nil, fmt.Errorf("error creando lector gzip: %w", err)
-        }
-        defer gzipReader.Close()
-        reader = gzipReader
-    default:
-        reader = bytes.NewReader(bodyBytes)
-    }
-
-    uncompressedBody, err := io.ReadAll(reader)
-    if err != nil {
-        return nil, fmt.Errorf("error descomprimiendo cuerpo: %w", err)
-    }
-
-    // Manejo de errores en la respuesta
-    if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-        var logtoErr LogtoError
-        if err := json.Unmarshal(uncompressedBody, &logtoErr); err != nil {
-            return nil, fmt.Errorf("error decoding Logto error response: %w", err)
-        }
-
-        errES := logtoErr.ErrorDescription
-        switch errES {
-        case "client authentication failed":
-            errES = "autenticación del cliente falló"
-        case "no client authentication mechanism provided":
-            errES = "no se proporcionó un mecanismo de autenticación del cliente"
-        default:
-            errES = logtoErr.ErrorDescription
-        }
-
-        if strings.HasPrefix(errES, "invalid client") {
-            errES = strings.Replace(errES, "invalid client", "cliente inválido", 1)
-        }
-
-        // Retornar HTTPError con el código de estado real y la descripción del error
-        return nil, &HTTPError{
-            StatusCode: resp.StatusCode,
-            Status:     logtoErr.Code,
-            Message:    errES,
-        }
-    }
-
-    // Procesar respuesta exitosa
-    var tokenResp TokenResponse
-    if err := json.Unmarshal(uncompressedBody, &tokenResp); err != nil {
-        return nil, fmt.Errorf("error decodificando respuesta de token: %w", err)
-    }
-
-    return &tokenResp, nil
+	return &tokenResp, nil
 }
 
 // GetTokenLogto obtiene un token de Logto utilizando las credenciales del cliente.
@@ -681,10 +534,12 @@ func (c *Client) HandleTokenByClientGin(ctx *gin.Context) {
 
 	tokenResp, err := c.GetTokenByClient(form, ctx.Request.Header, clientIP, c.ClientResource, c.ClientScope)
 	if err != nil {
-		ctx.JSON(http.StatusInternalServerError, gin.H{
-			"error":   "ERROR_INTERNO",
-			"message": err.Error(),
-		})
+		var httpErr *HTTPError
+		if errors.As(err, &httpErr) {
+			ctx.JSON(httpErr.StatusCode, gin.H{"error": httpErr.Status, "message": httpErr.Message})
+		} else {
+			ctx.JSON(http.StatusInternalServerError, gin.H{"error": "ERROR_INTERNO", "message": err.Error()})
+		}
 		return
 	}
 
@@ -699,20 +554,12 @@ func (c *Client) HandleApplications(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Extraer el token del encabezado Authorization
-	authHeader := r.Header.Get("Authorization")
-	if authHeader == "" {
-		respondError(w, r, http.StatusUnauthorized, "TOKEN_NO_PROPORCIONADO", TokenNotProvided)
+	// Obtener el token del contexto
+	token, ok := r.Context().Value("authToken").(string)
+	if !ok {
+		respondError(w, r, http.StatusInternalServerError, "ERROR_INTERNO", "No se pudo recuperar el token del contexto")
 		return
 	}
-
-	// Validar que el encabezado tenga el formato "Bearer <token>"
-	parts := strings.Split(authHeader, " ")
-	if len(parts) != 2 || parts[0] != "Bearer" {
-		respondError(w, r, http.StatusUnauthorized, "FORMATO_TOKEN_INVALIDO", InvalidTokenFormat)
-		return
-	}
-	token := parts[1]
 
 	apps, err := c.GetApplications(token)
 	respond(w, r, apps, err)
@@ -849,7 +696,7 @@ func (c *Client) ValidateLogtoJWS(tokenString string) []byte {
 	}
 
 	// 6. Obtener JWKS
-	jwks, err := getJWKS(c.host)
+	jwks, err := c.getJWKS()
 	if err != nil {
 		fmt.Printf("Error al obtener JWKS: %v\n", err)
 		return makeResponse("error", "error de token: es inválido", nil, nil)
@@ -937,7 +784,7 @@ func (c *Client) ValidateLogtoJWS(tokenString string) []byte {
 	}
 
 	if !validAud {
-		fmt.Printf("Error de token: audiencia inválida. Esperado '%s' o '%s', Obtenido: %v\n", 
+		fmt.Printf("Error de token: audiencia inválida. Esperado '%s' o '%s', Obtenido: %v\n",
 			expectedResource, expectedClientId, audValue)
 		return makeErrorResponse("error de token: es inválido")
 	}
@@ -946,6 +793,143 @@ func (c *Client) ValidateLogtoJWS(tokenString string) []byte {
 }
 
 /* FUNCIONES AUXILIARES	*/
+
+// Función auxiliar para peticiones GET que decodifican una respuesta JSON.
+func (c *Client) getAndUnmarshal(path, token string, target interface{}) error {
+	requestURL := c.host + path
+	req, err := http.NewRequest("GET", requestURL, nil)
+	if err != nil {
+		return fmt.Errorf(ErrCreatingRequest, err)
+	}
+	if token != "" {
+		req.Header.Set("Authorization", BearerPrefix+token)
+	}
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return fmt.Errorf(ErrPerformingRequest, err)
+	}
+	defer closeResponseBody(resp)
+
+	bodyBytes, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return fmt.Errorf(ErrReadingResponse, err)
+	}
+
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf(ErrRequestFailed, resp.StatusCode, string(bodyBytes))
+	}
+
+	if len(bodyBytes) == 0 {
+		return errors.New(ErrEmptyResponse)
+	}
+
+	if err := json.Unmarshal(bodyBytes, target); err != nil {
+		return fmt.Errorf(ErrDeserializingJSONResponse, err)
+	}
+	return nil
+}
+
+// getJWKS obtiene el conjunto de claves (JWKS) desde la URL indicada.
+func (c *Client) getJWKS() (*JWKS, error) {
+	if c.jwksCache != nil && time.Now().Before(c.jwksCacheExp) {
+		return c.jwksCache, nil
+	}
+	resp, err := c.httpClient.Get(c.host + "/oidc/jwks")
+	if err != nil {
+		return nil, err
+	}
+	defer closeResponseBody(resp)
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, err
+	}
+
+	var jwks JWKS
+	if err = json.Unmarshal(body, &jwks); err != nil {
+		return nil, err
+	}
+
+	// Guardar el resultado en el cache con una expiración.
+	c.jwksCache = &jwks
+	c.jwksCacheExp = time.Now().Add(1 * time.Hour) // Cache válido por 1 hora.
+
+	return &jwks, nil
+}
+
+// RSAKey convierte una JWK de tipo RSA a una clave pública RSA.
+func (jwk *JWK) RSAKey() (*rsa.PublicKey, error) {
+	// Decodificar el módulo (n) en base64url sin padding
+	nBytes, err := base64.RawURLEncoding.DecodeString(jwk.N)
+	if err != nil {
+		return nil, fmt.Errorf("error decodificando el módulo: %w", err)
+	}
+	// Decodificar el exponente (e)
+	eBytes, err := base64.RawURLEncoding.DecodeString(jwk.E)
+	if err != nil {
+		return nil, fmt.Errorf("error decodificando el exponente: %w", err)
+	}
+	// Convertir eBytes a entero (normalmente "AQAB" equivale a 65537)
+	eInt := 0
+	for _, b := range eBytes {
+		eInt = eInt<<8 + int(b)
+	}
+	return &rsa.PublicKey{
+		N: new(big.Int).SetBytes(nBytes),
+		E: eInt,
+	}, nil
+}
+
+// ECDSAKey convierte una JWK de tipo EC a una clave pública ECDSA.
+func (jwk *JWK) ECDSAKey() (*ecdsa.PublicKey, error) {
+	if jwk.Kty != "EC" {
+		return nil, errors.New("la clave no es de tipo EC")
+	}
+	if jwk.Crv == "" || jwk.X == "" || jwk.Y == "" {
+		return nil, errors.New("faltan parámetros EC en la JWK")
+	}
+	// Para ES384 se espera que la curva sea "P-384"
+	if jwk.Crv != "P-384" {
+		return nil, fmt.Errorf("curva no soportada: %s", jwk.Crv)
+	}
+	xBytes, err := base64.RawURLEncoding.DecodeString(jwk.X)
+	if err != nil {
+		return nil, fmt.Errorf("error decodificando la coordenada X: %w", err)
+	}
+	yBytes, err := base64.RawURLEncoding.DecodeString(jwk.Y)
+	if err != nil {
+		return nil, fmt.Errorf("error decodificando la coordenada Y: %w", err)
+	}
+	pubKey := &ecdsa.PublicKey{
+		Curve: elliptic.P384(),
+		X:     new(big.Int).SetBytes(xBytes),
+		Y:     new(big.Int).SetBytes(yBytes),
+	}
+	return pubKey, nil
+}
+
+// Middleware para extraer el token Bearer
+func extractTokenMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		authHeader := r.Header.Get("Authorization")
+		if authHeader == "" {
+			respondError(w, r, http.StatusUnauthorized, "TOKEN_NO_PROPORCIONADO", TokenNotProvided)
+			return
+		}
+
+		parts := strings.Split(authHeader, " ")
+		if len(parts) != 2 || parts[0] != "Bearer" {
+			respondError(w, r, http.StatusUnauthorized, "FORMATO_TOKEN_INVALIDO", InvalidTokenFormat)
+			return
+		}
+		token := parts[1]
+
+		// Añadir el token al contexto para que el siguiente handler lo use
+		ctx := context.WithValue(r.Context(), "authToken", token)
+		next.ServeHTTP(w, r.WithContext(ctx))
+	})
+}
 
 // Función parseResponse genérica que valida el status y decodifica la respuesta.
 func parseResponse[T any](resp *http.Response) (T, error) {
@@ -1098,78 +1082,6 @@ func extractIDFromURL(path, resource string) string {
 	return ""
 }
 
-// getJWKS obtiene el conjunto de claves (JWKS) desde la URL indicada.
-func getJWKS(jwksURL string) (*JWKS, error) {
-	client := http.Client{Timeout: 10 * time.Second}
-	resp, err := client.Get(jwksURL + "/oidc/jwks")
-	if err != nil {
-		return nil, err
-	}
-	defer closeResponseBody(resp)
-
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return nil, err
-	}
-
-	var jwks JWKS
-	if err = json.Unmarshal(body, &jwks); err != nil {
-		return nil, err
-	}
-	return &jwks, nil
-}
-
-// RSAKey convierte una JWK de tipo RSA a una clave pública RSA.
-func (jwk *JWK) RSAKey() (*rsa.PublicKey, error) {
-	// Decodificar el módulo (n) en base64url sin padding
-	nBytes, err := base64.RawURLEncoding.DecodeString(jwk.N)
-	if err != nil {
-		return nil, fmt.Errorf("error decodificando el módulo: %w", err)
-	}
-	// Decodificar el exponente (e)
-	eBytes, err := base64.RawURLEncoding.DecodeString(jwk.E)
-	if err != nil {
-		return nil, fmt.Errorf("error decodificando el exponente: %w", err)
-	}
-	// Convertir eBytes a entero (normalmente "AQAB" equivale a 65537)
-	eInt := 0
-	for _, b := range eBytes {
-		eInt = eInt<<8 + int(b)
-	}
-	return &rsa.PublicKey{
-		N: new(big.Int).SetBytes(nBytes),
-		E: eInt,
-	}, nil
-}
-
-// ECDSAKey convierte una JWK de tipo EC a una clave pública ECDSA.
-func (jwk *JWK) ECDSAKey() (*ecdsa.PublicKey, error) {
-	if jwk.Kty != "EC" {
-		return nil, errors.New("la clave no es de tipo EC")
-	}
-	if jwk.Crv == "" || jwk.X == "" || jwk.Y == "" {
-		return nil, errors.New("faltan parámetros EC en la JWK")
-	}
-	// Para ES384 se espera que la curva sea "P-384"
-	if jwk.Crv != "P-384" {
-		return nil, fmt.Errorf("curva no soportada: %s", jwk.Crv)
-	}
-	xBytes, err := base64.RawURLEncoding.DecodeString(jwk.X)
-	if err != nil {
-		return nil, fmt.Errorf("error decodificando la coordenada X: %w", err)
-	}
-	yBytes, err := base64.RawURLEncoding.DecodeString(jwk.Y)
-	if err != nil {
-		return nil, fmt.Errorf("error decodificando la coordenada Y: %w", err)
-	}
-	pubKey := &ecdsa.PublicKey{
-		Curve: elliptic.P384(),
-		X:     new(big.Int).SetBytes(xBytes),
-		Y:     new(big.Int).SetBytes(yBytes),
-	}
-	return pubKey, nil
-}
-
 // getClientIP obtiene la IP del cliente desde el encabezado X-Forwarded-For o RemoteAddr.
 func getClientIP(req *http.Request) string {
 	// Primero, intenta obtener la IP del encabezado X-Forwarded-For
@@ -1248,7 +1160,11 @@ func makeResponse(status, msg string, header, payload map[string]interface{}) []
 		Data:   data,
 	}
 
-	b, _ := json.Marshal(resp)
+	b, err := json.Marshal(resp)
+	if err != nil {
+		fmt.Printf("FATAL: no se pudo serializar la respuesta JSON: %v\n", err)
+		return []byte(`{"status":"error","data":{"error":"internal JSON serialization error"}}`)
+	}
 	return b
 }
 
